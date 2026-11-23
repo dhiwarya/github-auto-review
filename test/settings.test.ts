@@ -70,6 +70,29 @@ describe('SettingsStore', () => {
     assert.deepEqual(cfg.repos.allow, ['acme/api']);
   });
 
+  it('picks the reviews per repo, and insists on at least one', () => {
+    const cfg = new SettingsStore(db);
+    assert.deepEqual(cfg.reviewsFor('any/repo'), ['code', 'security', 'consistency'], 'all three by default');
+    const ok = cfg.update({ ...cfg.all, reviews: { code: true, security: true, consistency: false }, repoReviews: [{ repo: 'acme/docs*', code: false, security: false, consistency: true }] });
+    assert.ok(ok.ok);
+    assert.deepEqual(cfg.reviewsFor('acme/api'), ['code', 'security']);
+    assert.deepEqual(cfg.reviewsFor('Acme/Docs-site'), ['consistency']);
+    const none = cfg.update({ ...cfg.all, reviews: { code: false, security: false, consistency: false } });
+    assert.equal(none.ok, false);
+    if (!none.ok) assert.deepEqual(none.issues.map((i) => i.path), ['reviews']);
+  });
+
+  it('knows where each repo’s docs are, and takes one exact docs repo', () => {
+    const cfg = new SettingsStore(db);
+    assert.equal(cfg.docsFor('acme/api'), null);
+    const ok = cfg.update({ ...cfg.all, consistency: { stalePrDays: 14, docs: [{ repo: 'acme/*', paths: ['docs/'], docsRepo: 'https://github.com/acme/handbook', notes: '' }] } });
+    assert.ok(ok.ok);
+    assert.deepEqual(cfg.docsFor('acme/api'), { repo: 'acme/*', paths: ['docs/'], docsRepo: 'acme/handbook', notes: '' });
+    const bad = cfg.update({ ...cfg.all, consistency: { stalePrDays: 14, docs: [{ repo: 'acme/*', paths: [], docsRepo: 'acme/*', notes: '' }] } });
+    assert.equal(bad.ok, false);
+    if (!bad.ok) assert.deepEqual(bad.issues.map((i) => i.path), ['consistency.docs.0.docsRepo']);
+  });
+
   it('turns a pasted GitHub link into owner/repo', () => {
     const cfg = new SettingsStore(db);
     const res = cfg.update({ ...cfg.all, repos: { allow: ['https://github.com/acme/api/pull/12', 'github.com/acme/web.git'], deny: [] } });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Finding, Job, JobDetail, PostPreview, ReviewMode, Severity } from '../../../src/types.ts';
+import { reviewsOf, type Finding, type Job, type JobDetail, type PostPreview, type ReviewMode, type Severity, type RelatedPr } from '../../../src/types.ts';
 import { getJson, postJson, sendJson, useStream, useTick } from '../api.ts';
 import { clockTime, compact, Progress, SeverityChip, shortSha, StateBadge, timeAgo } from '../ui.tsx';
 import { ProcessView } from './Process.tsx';
@@ -53,6 +53,35 @@ function FindingCard({ f }: { f: Finding }) {
 }
 
 const CONFIDENCE_LABEL = { high: 'High', medium: 'Medium', low: 'Low' } as const;
+
+// Other open PRs that touch the same code: an alert, never a finding.
+function RelatedPrs({ job }: { job: Job }) {
+  let related: RelatedPr[] = [];
+  try {
+    related = job.related_prs ? (JSON.parse(job.related_prs) as RelatedPr[]) : [];
+  } catch {
+    // An unreadable value just means nothing to show.
+  }
+  if (!related.length) return null;
+  return (
+    <div className="small related">
+      <div>
+        <strong>Related open PRs</strong> <span className="muted">for awareness only; they don't affect confidence or approval</span>
+      </div>
+      <ul>
+        {related.map((r) => (
+          <li key={r.number}>
+            <a href={r.url} target="_blank" rel="noreferrer">
+              #{r.number}
+            </a>{' '}
+            {r.title} <span className="muted">· {r.relation} · {r.staleDays !== null ? `low confidence, no activity for ${r.staleDays} days` : `${r.confidence} confidence`}</span>
+            <div className="muted">{r.note}</div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 // The review's confidence, what lowered it, and whether it approved the PR.
 function Verdict({ job }: { job: Job }) {
@@ -257,6 +286,7 @@ export function JobView({ id }: { id: number }) {
           <span>+{job.additions} −{job.deletions} in {job.changed_files} files</span>
           <span>{job.dry_run ? 'dry run' : job.mode === 'draft' ? 'draft review' : 'published review'}</span>
           <span>{job.source === 'manual' ? 'added by you' : 'review requested'}</span>
+          {job.kind === 'review' && <span>reviews: {reviewsOf(job).join(', ')}</span>}
           {job.attempts > 0 && <span>attempt {job.attempts + (job.state === 'running' ? 1 : 0)}</span>}
         </div>
         {ok.length > 0 && (
@@ -275,6 +305,7 @@ export function JobView({ id }: { id: number }) {
         )}
 
         <Verdict job={job} />
+        <RelatedPrs job={job} />
 
         {active && (
           <div className="job-progress">

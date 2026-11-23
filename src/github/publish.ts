@@ -21,8 +21,11 @@ export class PendingReviewExists extends Error {}
 export const findingMarker = (id: number) => `<!-- ai-finding:${id} -->`;
 const FINDING_MARKER = /<!-- ai-finding:(\d+) -->/;
 
-// The last line of every comment the app writes.
-export const SIGNATURE = '<sub>Auto Reviewer</sub>';
+// Comments carry no visible signature. The app knows its own by their hidden markers, and
+// by the signature line that earlier versions added.
+const LEGACY_SIGNATURE = '<sub>Auto Reviewer</sub>';
+const REVIEW_MARKER = '<!-- ai-review ';
+export const isOwnComment = (body: string) => FINDING_MARKER.test(body) || body.includes(REVIEW_MARKER) || body.includes(LEGACY_SIGNATURE);
 
 // null posts a pending draft that only you can see until you submit it.
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES' | null;
@@ -56,8 +59,8 @@ export async function postReview(
     // A line GitHub won't accept fails the whole review. Retry once with everything in the body.
     if (httpStatus(err) === 422 && comments.length) {
       droppedInline = true;
-      const moved = comments.map((c) => `**\`${c.path}:${c.line}\`**\n\n${c.body.replace(SIGNATURE, '').trim()}`).join('\n\n---\n\n');
-      res = await create([], insertBeforeSignature(body, `**Findings on changed lines**\n\n${moved}`));
+      const moved = comments.map((c) => `**\`${c.path}:${c.line}\`**\n\n${c.body.trim()}`).join('\n\n---\n\n');
+      res = await create([], insertBeforeMarker(body, `**Findings on changed lines**\n\n${moved}`));
     } else {
       throw err;
     }
@@ -74,8 +77,8 @@ export async function postReview(
   return { id: review.id, url: review.html_url, state: review.state, commentIds, droppedInline };
 }
 
-function insertBeforeSignature(body: string, section: string): string {
-  const at = body.lastIndexOf(SIGNATURE);
+function insertBeforeMarker(body: string, section: string): string {
+  const at = body.lastIndexOf(REVIEW_MARKER);
   return at < 0 ? `${body}\n\n${section}` : `${body.slice(0, at)}${section}\n\n${body.slice(at)}`;
 }
 

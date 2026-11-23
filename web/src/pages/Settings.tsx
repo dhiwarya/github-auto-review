@@ -338,7 +338,114 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
         </Field>
       </Section>
 
-      <Section title="Reviewer" description="One provider does the whole review: the code and requirements pass, the security pass and the double-check.">
+      <Section title="Reviews" description="What each PR is reviewed for. Each review is a separate model run, so fewer reviews use less of your subscription.">
+        <div className="rows" role="group" aria-label="Reviews to run">
+          <Toggle
+            checked={draft.reviews.code}
+            onChange={(v) => edit((d) => void (d.reviews.code = v))}
+            label={<strong>Code</strong>}
+            hint="Bugs, edge cases, error handling, race conditions, missing tests, breaking changes."
+          />
+          <Toggle
+            checked={draft.reviews.security}
+            onChange={(v) => edit((d) => void (d.reviews.security = v))}
+            label={<strong>Security</strong>}
+            hint="Injection, access control, secrets, unsafe defaults, dependency and CI changes."
+          />
+          <Toggle
+            checked={draft.reviews.consistency}
+            onChange={(v) => edit((d) => void (d.reviews.consistency = v))}
+            label={<strong>Consistency</strong>}
+            hint="Whether the change agrees with its linked issue, its own description, the docs, and other open PRs touching the same code."
+          />
+        </div>
+        {errorFor('reviews') && <div className="small error">{errorFor('reviews')}</div>}
+        <div className="small muted">A PR is approved for you only when the code and security reviews both ran. Without the consistency review, confidence is medium at most.</div>
+        <Field label="Exceptions per repo" hint="The first matching pattern wins." error={errorFor('repoReviews')}>
+          <div className="rows">
+            {draft.repoReviews.map((o, i) => (
+              <div key={i} className="row wrap-row">
+                <input value={o.repo} placeholder="your-org/repo" onChange={(e) => edit((d) => void (d.repoReviews[i].repo = e.target.value))} />
+                {(['code', 'security', 'consistency'] as const).map((r) => (
+                  <label key={r} className="check-inline">
+                    <input type="checkbox" checked={o[r]} onChange={(e) => edit((d) => void (d.repoReviews[i][r] = e.target.checked))} />
+                    {r[0].toUpperCase() + r.slice(1)}
+                  </label>
+                ))}
+                <button type="button" className="btn btn-ghost btn-small" onClick={() => edit((d) => void d.repoReviews.splice(i, 1))}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost btn-small add-row" onClick={() => edit((d) => void d.repoReviews.push({ repo: '', ...d.reviews }))}>
+              Add exception
+            </button>
+          </div>
+        </Field>
+      </Section>
+
+      <Section
+        title="Consistency review"
+        description="Where each repo's docs live, and when another open PR counts as unmaintained. Other PRs are only ever mentioned as alerts: they never block an approval or request changes."
+      >
+        <Field
+          label="Another open PR is unmaintained after"
+          hint="An overlap with an unmaintained PR is still mentioned, but always with low confidence."
+          error={errorFor('consistency.stalePrDays')}
+        >
+          <NumberInput value={draft.consistency.stalePrDays} min={1} max={3650} suffix="days without activity" onChange={(v) => edit((d) => void (d.consistency.stalePrDays = v))} />
+        </Field>
+        <Field
+          label="Where the docs are"
+          hint="Per repo; the first matching pattern wins. Without an entry the reviewer looks for docs in the repo itself."
+          error={errorFor('consistency.docs')}
+        >
+          <div className="rows">
+            {draft.consistency.docs.map((o, i) => (
+              <div key={i} className="doc-card">
+                <div className="small muted">For this repo</div>
+                <div className="row">
+                  <input value={o.repo} placeholder="your-org/repo or your-org/*" aria-label="Repo this applies to" onChange={(e) => edit((d) => void (d.consistency.docs[i].repo = e.target.value))} />
+                  <button type="button" className="btn btn-ghost btn-small" onClick={() => edit((d) => void d.consistency.docs.splice(i, 1))}>
+                    Remove
+                  </button>
+                </div>
+                <div className="small muted">Docs inside the repo, separated by commas</div>
+                <input
+                  value={o.paths.join(', ')}
+                  placeholder="docs/, README.md"
+                  aria-label="Docs paths in the repo"
+                  onChange={(e) => edit((d) => void (d.consistency.docs[i].paths = e.target.value.split(',').map((p) => p.trim()).filter(Boolean)))}
+                />
+                <div className="small muted">A separate docs repo, readable with your GitHub token</div>
+                <input
+                  value={o.docsRepo ?? ''}
+                  placeholder="your-org/docs"
+                  aria-label="Separate docs repository"
+                  onChange={(e) => edit((d) => void (d.consistency.docs[i].docsRepo = e.target.value.trim() || null))}
+                />
+                <div className="small muted">Anything else the reviewer should know</div>
+                <textarea
+                  rows={2}
+                  value={o.notes}
+                  placeholder="For example: the API reference is generated, ignore docs/api"
+                  aria-label="Notes for the reviewer"
+                  onChange={(e) => edit((d) => void (d.consistency.docs[i].notes = e.target.value))}
+                />
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn btn-ghost btn-small add-row"
+              onClick={() => edit((d) => void d.consistency.docs.push({ repo: '', paths: [], docsRepo: null, notes: '' }))}
+            >
+              Add a docs location
+            </button>
+          </div>
+        </Field>
+      </Section>
+
+      <Section title="Reviewer" description="One provider does every review and the double-check.">
         <Field label="Who reviews">
           <Segmented
             label="Review provider"

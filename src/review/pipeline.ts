@@ -7,15 +7,16 @@ import type { Checkout, RepoCache } from '../git/mirror.ts';
 import type { GitHub } from '../github/client.ts';
 import { removeLabel, showLabel } from '../github/labels.ts';
 import { getLinkedRefs, getPr, listDiscussion, listPrFiles, type PrInfo } from '../github/prs.ts';
-import { myVerdict, PendingReviewExists, postReview, SIGNATURE, type InlineComment, type ReviewEvent } from '../github/publish.ts';
+import { myVerdict, PendingReviewExists, isOwnComment, postReview, type InlineComment, type ReviewEvent } from '../github/publish.ts';
 import { NoProviderAvailable, type Router } from '../llm/router.ts';
 import { containsSecret, ownSecrets } from '../secrets.ts';
-import type { Confidence, Finding, Job, PostPreview, Provider, ReviewMode } from '../types.ts';
+import { PASS_OF, REVIEW_TYPES, reviewsOf, type Confidence, type Finding, type Job, type PostPreview, type Provider, type ReviewMode, type ReviewType } from '../types.ts';
 import { assess, atLeast, openBlockers } from './confidence.ts';
-import { buildContext, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
+import { buildContext, docsSection, fence, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
 import { countsLine, inlineBody, recheckBody, summaryBody } from './format.ts';
-import { mainInstructions, recheckInstructions, securityInstructions, verifyInstructions } from './prompts.ts';
-import { RecheckOut, recheckSchema, ReviewOut, reviewSchema, VerifyOut, verifySchema } from './schema.ts';
+import { consistencyInstructions, mainInstructions, recheckInstructions, securityInstructions, verifyInstructions } from './prompts.ts';
+import { relatedAlerts, relatedCandidates, relatedSection, type RelatedCandidate } from './related.ts';
+import { ConsistencyOut, consistencySchema, RecheckOut, recheckSchema, ReviewOut, reviewSchema, VerifyOut, verifySchema } from './schema.ts';
 import { addedTextOf, lowerSeverity, minSeverity, placeFindings, scrubText, type Candidate } from './validate.ts';
 
 // The job no longer needs doing: PR closed, or new commits replaced it.
@@ -23,6 +24,9 @@ export class JobObsolete extends Error {}
 
 // Posting a dry-run review isn't possible right now; the message says why.
 export class PostRefused extends Error {}
+
+// Where a separate docs repository is checked out, inside the PR checkout.
+const EXTERNAL_DOCS_DIR = '.external-docs';
 
 // The review contains one of the app's own credentials. Never retried.
 export class UnsafeToPost extends Error {}
@@ -65,6 +69,7 @@ export class ReviewPipeline {
 
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `auto-reviewer-work-${job.id}-`));
     let checkout: Checkout | null = null;
+    let docs: { dir: string; cleanup(): Promise<void> } | null = null;
     try {
       checkout = await this.checkout(job, pr, signal);
 
@@ -78,37 +83,56 @@ export class ReviewPipeline {
           `${ctx.changedLines} changed lines, ${ctx.issues.length} linked issue(s)${ctx.large ? ', large-PR mode' : ''}`,
       );
 
-      const task = { cwd: checkout.dir, workDir, timeoutMs: this.cfg.limits.passTimeoutSec * 1000, signal };
-      this.step(job, 'Reviewing: code and requirements, security', 25);
-      let done = 0;
-      const progress = () => this.db.updateJob(job.id, { progress: 25 + ++done * 22 });
-      const [main, security] = await Promise.all([
-        this.router
-          .run(job.id, 'main', {
-            ...task,
-            instructions: mainInstructions(ctx.me, this.cfg.limits.maxNits),
-            prompt: ctx.prompt,
-            schema: reviewSchema,
-          })
-          .finally(progress),
-        this.router
-          .run(job.id, 'security', {
-            ...task,
-            instructions: securityInstructions(ctx.me),
-            prompt: ctx.prompt,
-            schema: reviewSchema,
-          })
-          .finally(progress),
-      ]);
-      const mainOut = parseReview(main.output, 'main');
-      const secOut = parseReview(security.output, 'security');
-      const label = (r: { provider: string; model: string | null }) => `${r.provider} ${r.model ?? '(default model)'}`;
-      this.db.event(job.id, `Main pass (${label(main)}): ${mainOut.findings.length} finding(s). Security pass (${label(security)}): ${secOut.findings.length} finding(s).`);
+      // The consistency review also gets the docs and the other open PRs touching the same files.
+      const reviews = reviewsOf(job);
+      let related: RelatedCandidate[] = [];
+      let consistencyPrompt = ctx.prompt;
+      if (reviews.includes('consistency')) {
+        docs = await this.externalDocs(job, checkout.dir);
+        try {
+          const changed = ctx.prFiles.map((f) => f.filename).filter((f) => !this.cfg.isExcludedFile(f));
+          related = await relatedCandidates(this.gh, this.cache, pr, changed, this.cfg.consistency.stalePrDays);
+        } catch (err) {
+          if (signal.aborted) throw err;
+          this.db.event(job.id, `Couldn't compare with the other open PRs (${err instanceof Error ? err.message : err}); reviewing without them`, 'warn');
+        }
+        const others = related.length
+          ? `## Other open pull requests that change the same files\n${fence('other-open-prs', relatedSection(related))}`
+          : 'No other open pull request changes the same files, so related_prs is empty.';
+        consistencyPrompt = `${ctx.prompt}\n\n${docsSection(this.cfg.docsFor(job.repo), docs?.dir ?? null)}\n\n${others}`;
+        const docsCfg = this.cfg.docsFor(job.repo);
+        this.db.setEvidence(job.id, {
+          ...ctx.evidence,
+          docs: { paths: docsCfg?.paths ?? [], repo: docs ? (docsCfg?.docsRepo ?? null) : null },
+          otherPrs: related.map((r) => ({ number: r.pr.number, title: r.pr.title, url: r.pr.url, files: r.files.length, staleDays: r.staleDays })),
+          promptChars: consistencyPrompt.length,
+        });
+      }
 
-      let candidates: Candidate[] = [
-        ...mainOut.findings.map((f) => toCandidate(f, 'main', main.provider, main.model)),
-        ...secOut.findings.map((f) => toCandidate(f, 'security', security.provider, security.model)),
-      ];
+      const task = { cwd: checkout.dir, workDir, timeoutMs: this.cfg.limits.passTimeoutSec * 1000, signal };
+      const brief: Record<ReviewType, { instructions: string; prompt: string; schema: object }> = {
+        code: { instructions: mainInstructions(ctx.me, this.cfg.limits.maxNits), prompt: ctx.prompt, schema: reviewSchema },
+        security: { instructions: securityInstructions(ctx.me), prompt: ctx.prompt, schema: reviewSchema },
+        consistency: { instructions: consistencyInstructions(ctx.me), prompt: consistencyPrompt, schema: consistencySchema },
+      };
+      this.step(job, `Reviewing: ${reviews.join(', ')}`, 25);
+      let done = 0;
+      const progress = () => this.db.updateJob(job.id, { progress: 25 + Math.round((++done * 44) / reviews.length) });
+      const ran = await Promise.all(
+        reviews.map(async (type) => {
+          const res = await this.router.run(job.id, PASS_OF[type], { ...task, ...brief[type] }).finally(progress);
+          return { type, res, out: parseReview(res.output, type) };
+        }),
+      );
+      const outOf = (type: ReviewType) => ran.find((r) => r.type === type)?.out;
+      const picks = ConsistencyOut.safeParse(ran.find((r) => r.type === 'consistency')?.res.output);
+      const spec = outOf('consistency')?.spec_alignment ?? { status: 'not_checked' as const, notes: '' };
+      this.db.event(
+        job.id,
+        ran.map((r) => `${r.type} review (${r.res.provider} ${r.res.model ?? '(default model)'}): ${r.out.findings.length} finding(s)`).join('. ').replace(/^./, (c) => c.toUpperCase()) + '.',
+      );
+
+      let candidates: Candidate[] = ran.flatMap((r) => r.out.findings.map((f) => toCandidate(f, r.type, r.res.provider, r.res.model)));
 
       const placeOpts = { checkoutDir: checkout.dir, prFiles: ctx.prFiles, previous, maxNits: this.cfg.limits.maxNits };
       if (this.cfg.models.doubleCheck && candidates.some((c) => c.severity === 'blocker' || c.severity === 'major')) {
@@ -149,7 +173,7 @@ export class ReviewPipeline {
         this.db.event(job.id, 'A model tried to output a credential that is not in the PR. That finding was discarded; check the PR for prompt injection.', 'warn');
       }
 
-      const resolvedIds = new Set([...mainOut.resolved_previous_ids, ...secOut.resolved_previous_ids]);
+      const resolvedIds = new Set(ran.flatMap((r) => r.out.resolved_previous_ids));
       const resolved = previous.filter((f) => resolvedIds.has(f.id));
       for (const f of resolved) this.db.updateFinding(f.id, { resolved_by_job: job.id });
 
@@ -162,10 +186,13 @@ export class ReviewPipeline {
         smuggled ||= scrubbed.smuggled;
         return scrubbed.text;
       };
-      const summaries = [clean(mainOut.summary), clean(secOut.summary)];
-      const questions = [...mainOut.questions_for_author, ...secOut.questions_for_author].slice(0, 4).map(clean);
-      const passes = [mainOut.review_confidence, secOut.review_confidence].map((p) => ({ level: p.level, reason: clean(p.reason) }));
-      const specNotes = clean(mainOut.spec_alignment.notes);
+      const summaries = ran.map((r) => clean(r.out.summary));
+      const questions = ran.flatMap((r) => r.out.questions_for_author).slice(0, 4).map(clean);
+      const passes = ran.map((r) => ({ level: r.out.review_confidence.level, reason: clean(r.out.review_confidence.reason) }));
+      const specNotes = clean(spec.notes);
+      // Alerts about other open PRs: shown to the reader, with no say in confidence or approval.
+      const alerts = picks.success ? relatedAlerts(related, picks.data.related_prs.map((p) => ({ ...p, note: clean(p.note) }))) : [];
+      if (alerts.length) this.db.event(job.id, `Related open PRs: ${alerts.map((a) => `#${a.number} (${a.relation}, ${a.confidence} confidence)`).join(', ')}`);
       if (smuggled) {
         this.db.event(job.id, 'A model put a credential that is not in the PR into its summary or questions. It was redacted; check the PR for prompt injection.', 'warn');
       }
@@ -173,8 +200,10 @@ export class ReviewPipeline {
         repo: job.repo,
         headSha: job.head_sha,
         summaries,
-        specStatus: mainOut.spec_alignment.status,
+        specStatus: spec.status,
         specNotes,
+        related: alerts,
+        reviews,
         issues: ctx.issues,
         findings: posted,
         questions,
@@ -187,7 +216,8 @@ export class ReviewPipeline {
       const assessment = assess({
         findings: posted,
         openEarlier: previous.filter((f) => !resolvedIds.has(f.id)),
-        specStatus: mainOut.spec_alignment.status,
+        notRun: REVIEW_TYPES.filter((r) => !reviews.includes(r)),
+        specStatus: spec.status,
         questions: questions.length,
         large: ctx.large,
         truncated: ctx.truncated,
@@ -197,7 +227,8 @@ export class ReviewPipeline {
       this.db.event(job.id, `Confidence ${assessment.level}${assessment.reasons.length ? `: ${assessment.reasons.join('; ')}` : ''}`);
       job = this.db.updateJob(job.id, {
         review_body: body,
-        spec_status: mainOut.spec_alignment.status,
+        related_prs: alerts.length ? JSON.stringify(alerts) : null,
+        spec_status: spec.status,
         confidence: assessment.level,
         confidence_notes: assessment.reasons.join('\n') || null,
       });
@@ -205,8 +236,28 @@ export class ReviewPipeline {
       if (signal.aborted) throw signal.reason;
       await this.publish(job, inserted);
     } finally {
+      await docs?.cleanup().catch(() => {});
       await checkout?.cleanup();
       await fs.rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  // Checks out the repo's separate docs repository, if Settings names one, inside the PR
+  // checkout so the consistency review can read it. Without it the review still runs.
+  private async externalDocs(job: Job, checkoutDir: string): Promise<{ dir: string; cleanup(): Promise<void> } | null> {
+    const docsRepo = this.cfg.docsFor(job.repo)?.docsRepo;
+    if (!docsRepo) return null;
+    const dir = `${EXTERNAL_DOCS_DIR}/${docsRepo.split('/')[1]}`;
+    try {
+      this.step(job, `Fetching the docs repository ${docsRepo}`, 20);
+      const sha = await this.cache.fetchDefault(docsRepo);
+      await fs.mkdir(path.join(checkoutDir, EXTERNAL_DOCS_DIR));
+      const worktree = await this.cache.worktreeAt(docsRepo, sha, path.join(checkoutDir, dir));
+      return { dir, cleanup: worktree.cleanup };
+    } catch (err) {
+      const why = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      this.db.event(job.id, `Couldn't read the docs repository ${docsRepo} (${why}); reviewing without it`, 'warn');
+      return null;
     }
   }
 
@@ -251,7 +302,7 @@ export class ReviewPipeline {
         ]);
         const prompt = recheckPrompt(pr, open, discussion, issues);
         const threads = new Set(open.map((f) => f.comment_id).filter((id) => id !== null));
-        const people = discussion.filter((c) => !c.body.includes(SIGNATURE));
+        const people = discussion.filter((c) => !isOwnComment(c.body));
         this.db.setEvidence(job.id, {
           diff: null,
           ...refsEvidence(issues, prs),
@@ -309,6 +360,7 @@ export class ReviewPipeline {
       ? assess({
           findings: [],
           openEarlier: stillOpen,
+          notRun: [],
           specStatus: last?.spec_status ?? 'not_checked',
           questions: 0,
           large: false,
@@ -589,11 +641,13 @@ function parseReview(output: unknown, pass: string): ReviewOut {
   return parsed.data;
 }
 
-function toCandidate(f: ReviewOut['findings'][number], pass: 'main' | 'security', model: Provider, modelId: string | null): Candidate {
+// Each review owns its categories, whatever the model picked.
+function toCandidate(f: ReviewOut['findings'][number], type: ReviewType, model: Provider, modelId: string | null): Candidate {
+  const category = type === 'security' ? 'security' : type === 'consistency' ? (f.category === 'docs' ? 'docs' : 'requirement') : f.category;
   return {
     ...f,
-    category: pass === 'security' ? 'security' : f.category,
-    pass,
+    category,
+    pass: PASS_OF[type],
     model,
     model_id: modelId,
     original_severity: f.severity,

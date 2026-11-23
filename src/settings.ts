@@ -4,7 +4,7 @@ import picomatch from 'picomatch';
 import { bus } from './bus.ts';
 import type { Db } from './db.ts';
 import { SettingsSchema, type Settings, type SettingsIssue } from './settings-schema.ts';
-import type { Provider, ReviewMode } from './types.ts';
+import { REVIEW_TYPES, type Provider, type ReviewMode, type ReviewType } from './types.ts';
 
 export { SettingsSchema, type Settings, type SettingsIssue };
 
@@ -103,6 +103,8 @@ export class SettingsStore {
   get limits() { return this.data.limits; }
   get labels() { return this.data.labels; }
   get approval() { return this.data.approval; }
+  get reviews() { return this.data.reviews; }
+  get consistency() { return this.data.consistency; }
   get keepCheckouts() { return this.data.keepCheckouts; }
 
   // ---- helpers
@@ -122,6 +124,18 @@ export class SettingsStore {
   modeFor(repo: string): ReviewMode {
     const hit = this.data.repoModes.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase()));
     return hit ? hit.mode : this.data.defaultMode;
+  }
+
+  // The reviews a PR in this repo gets, in a fixed order.
+  reviewsFor(repo: string): ReviewType[] {
+    const hit = this.data.repoReviews.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase()));
+    const on = hit ?? this.data.reviews;
+    return REVIEW_TYPES.filter((r) => on[r]);
+  }
+
+  // Where this repo's docs live, if you said.
+  docsFor(repo: string): Settings['consistency']['docs'][number] | null {
+    return this.data.consistency.docs.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase())) ?? null;
   }
 
   modelChain(p: Provider): (string | null)[] {

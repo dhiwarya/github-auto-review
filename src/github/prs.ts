@@ -46,6 +46,28 @@ export interface LinkedPr {
   url: string;
 }
 
+export interface OpenPrSummary {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  draft: boolean;
+  updatedAt: string;
+}
+
+// The repo's open PRs, most recently active first. One request for up to 100.
+export async function listOpenPrs(gh: GitHub, repo: string): Promise<OpenPrSummary[]> {
+  const { data } = await gh.octokit.rest.pulls.list({ ...splitRepo(repo), state: 'open', sort: 'updated', direction: 'desc', per_page: 100 });
+  return data.map((p) => ({
+    number: p.number,
+    title: p.title,
+    url: p.html_url,
+    author: p.user?.login ?? 'unknown',
+    draft: Boolean(p.draft),
+    updatedAt: p.updated_at,
+  }));
+}
+
 export async function getPr(gh: GitHub, repo: string, number: number): Promise<PrInfo> {
   const { data } = await gh.octokit.rest.pulls.get({ ...splitRepo(repo), pull_number: number });
   return {

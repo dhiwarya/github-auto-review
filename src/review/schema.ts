@@ -11,7 +11,7 @@ const findingJson = {
   additionalProperties: false,
   required: ['category', 'severity', 'confidence', 'file', 'line', 'title', 'evidence', 'problem', 'suggestion'],
   properties: {
-    category: enumOf(['bug', 'security', 'requirement', 'design', 'test', 'performance']),
+    category: enumOf(['bug', 'security', 'requirement', 'docs', 'design', 'test', 'performance']),
     severity: enumOf(['blocker', 'major', 'minor', 'nit']),
     confidence: enumOf(['high', 'medium', 'low']),
     file: str,
@@ -48,6 +48,29 @@ export const reviewSchema = {
       properties: {
         level: enumOf(['high', 'medium', 'low']),
         reason: str,
+      },
+    },
+  },
+};
+
+// The consistency review also names other open PRs that matter to this one.
+export const consistencySchema = {
+  ...reviewSchema,
+  required: [...reviewSchema.required, 'related_prs'],
+  properties: {
+    ...reviewSchema.properties,
+    related_prs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['number', 'relation', 'note', 'confidence'],
+        properties: {
+          number: { type: 'integer' },
+          relation: enumOf(['overlap', 'conflict', 'duplicate']),
+          note: str,
+          confidence: enumOf(['high', 'medium', 'low']),
+        },
       },
     },
   },
@@ -103,7 +126,7 @@ export const recheckSchema = {
 const severity = z.enum(['blocker', 'major', 'minor', 'nit']);
 
 export const FindingOut = z.object({
-  category: z.enum(['bug', 'security', 'requirement', 'design', 'test', 'performance']),
+  category: z.enum(['bug', 'security', 'requirement', 'docs', 'design', 'test', 'performance']),
   severity,
   confidence: z.enum(['high', 'medium', 'low']),
   file: z.string(),
@@ -130,6 +153,18 @@ export const ReviewOut = z.object({
   }),
 });
 export type ReviewOut = z.infer<typeof ReviewOut>;
+
+export const ConsistencyOut = ReviewOut.extend({
+  related_prs: z.array(
+    z.object({
+      number: z.number().int(),
+      relation: z.enum(['overlap', 'conflict', 'duplicate']),
+      note: z.string(),
+      confidence: z.enum(['high', 'medium', 'low']),
+    }),
+  ),
+});
+export type ConsistencyOut = z.infer<typeof ConsistencyOut>;
 
 export const VerifyOut = z.object({
   verdicts: z.array(

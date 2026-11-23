@@ -49,20 +49,44 @@ export function mainInstructions(me: string, maxNits: number): string {
 Your working directory is a read-only checkout of the PR's head commit. Use Read, Grep and Glob to look beyond the diff (callers, tests, configuration, related modules) before claiming something is wrong.
 ${TRUST_BOUNDARY}
 ## What to review
-1. Code: correctness, edge cases, error handling, concurrency and race conditions, resource leaks, tests that are missing or don't exercise the changed behavior, breaking changes to public APIs, migrations and data-shape changes.
-2. Requirement alignment against the linked issues. Report these with category "requirement":
-   - missing: the issue asks for something the code doesn't implement
-   - divergent: the code solves a different problem, or reads the requirement differently from the issue
-   - inconsistent: the PR description or commit messages claim behavior the code doesn't have
-   Set spec_alignment.status to aligned, partial or misaligned with short notes. With no linked issues, use "no_spec" and don't invent requirements.
+Correctness, edge cases, error handling, concurrency and race conditions, resource leaks, tests that are missing or don't exercise the changed behavior, breaking changes to public APIs, migrations and data-shape changes, and performance where the change makes it clearly worse.
 
-Security has its own separate pass. Only raise a security problem here if it is also an obvious correctness bug.
+Security, and whether the change matches its linked issue and the docs, are reviewed separately. Only raise a security problem here if it is also an obvious correctness bug, and never use the categories "requirement" or "docs".
 ${FINDING_RULES(maxNits)}
 ## Other fields
 - summary: 2 to 4 sentences on what the PR does and your overall assessment.
+- spec_alignment: status "not_checked", notes "".
 - questions_for_author: only real ambiguities that block understanding, at most 3.
 - resolved_previous_ids: ids of previously raised findings (if any are listed) that the current code fixes.
-${CONFIDENCE_RULES('in correctness or requirements')}`;
+${CONFIDENCE_RULES('in correctness')}`;
+}
+
+export function consistencyInstructions(me: string): string {
+  return `You are doing the consistency review of a GitHub pull request for ${me}: whether the change agrees with everything around it. They read your findings before anything is shared with the author, so optimise for being right, not for volume.
+
+Your working directory is a read-only checkout of the PR's head commit. Use Read, Grep and Glob to compare the change with the issue, the docs and the rest of the repository before claiming something disagrees.
+${TRUST_BOUNDARY}
+## What to review
+1. The linked issues. Report these with category "requirement":
+   - missing: the issue asks for something the code doesn't implement
+   - divergent: the code solves a different problem, or reads the requirement differently from the issue
+   Set spec_alignment.status to aligned, partial or misaligned with short notes. With no linked issues, use "no_spec" and don't invent requirements.
+2. The PR's own description and commit messages: claims of behavior the code doesn't have. Category "requirement".
+3. The docs. Report these with category "docs": documentation, README sections, config examples, API references, changelogs and comments on public interfaces that the change makes wrong or incomplete, and new behavior a user needs to know about that is documented nowhere. The prompt says where this repository's docs are. Quote the stale text as evidence, with the doc file as file. Don't ask for docs on internal details.
+4. Other open pull requests, when the prompt lists any. For each one that matters, add an entry to related_prs:
+   - overlap: both change the same area and whoever merges second will have to adapt
+   - conflict: they change the same behavior in ways that can't both stand
+   - duplicate: it does the same thing as this PR
+   note: one sentence on what the two have in common and what the author should check. confidence: how sure you are of the relation from the changes shown.
+   Leave out PRs that only happen to touch the same file. Other PRs are context for the reader: never raise a finding about one, and never let one change a severity or your confidence.
+
+Code correctness and security are reviewed separately; don't raise them here.
+${FINDING_RULES(0)}
+## Other fields
+- summary: 1 to 3 sentences on how well the change fits the issue and the docs.
+- questions_for_author: only where the issue or the docs leave the intent genuinely unclear, at most 3.
+- resolved_previous_ids: ids of previously raised requirement or docs findings that the current code fixes.
+${CONFIDENCE_RULES('in what it was asked to do')}`;
 }
 
 export function securityInstructions(me: string): string {

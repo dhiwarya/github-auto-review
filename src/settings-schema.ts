@@ -15,6 +15,15 @@ const repoPattern = z
   .pipe(z.string().regex(/^[\w.*?-]+\/[\w.*?-]+$/, 'Use owner/repo, or a pattern such as owner/*'));
 const clock = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use 24-hour HH:MM');
 const int = (min: number, max: number) => z.number().int().min(min).max(max);
+// An exact repository, not a pattern. A pasted GitHub link becomes owner/repo.
+const repoName = repoPattern.pipe(z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'Use one repository: owner/repo'));
+// Which reviews run. Each is a separate model run, so fewer means less usage.
+const reviewTypes = {
+  code: z.boolean().default(true),
+  security: z.boolean().default(true),
+  consistency: z.boolean().default(true),
+};
+const atLeastOne = (r: { code: boolean; security: boolean; consistency: boolean }) => r.code || r.security || r.consistency;
 const labelName = z.string().trim().min(1, 'Give the label a name').max(50, 'GitHub allows up to 50 characters');
 const LABEL_KINDS = ['reviewing', 'feedback', 'approved'] as const;
 
@@ -37,6 +46,31 @@ export const SettingsSchema = z.object({
   defaultMode: mode.default('draft'),
   // Per-repo mode overrides; the first matching pattern wins.
   repoModes: z.array(z.object({ repo: repoPattern, mode })).default([]),
+  // The reviews every PR gets, with per-repo exceptions; the first matching pattern wins.
+  reviews: z.object(reviewTypes).refine(atLeastOne, 'Turn on at least one review').prefault({}),
+  repoReviews: z.array(z.object({ repo: repoPattern, ...reviewTypes }).refine(atLeastOne, 'Turn on at least one review')).default([]),
+  consistency: z
+    .object({
+      // Another open PR with no activity for this long is treated as unmaintained: an
+      // overlap with it is still mentioned, but with low confidence.
+      stalePrDays: int(1, 3650).default(30),
+      // Where each repo's documentation lives, for the consistency review. Without an
+      // entry the reviewer looks for docs in the repo itself.
+      docs: z
+        .array(
+          z.object({
+            repo: repoPattern,
+            // Folders or files in the reviewed repo, e.g. docs/ or README.md.
+            paths: z.array(z.string().trim().min(1)).default([]),
+            // Another repository that holds the docs, checked out read-only next to the PR.
+            docsRepo: repoName.nullable().default(null),
+            // Anything else the reviewer should know about the docs, in your words.
+            notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
+          }),
+        )
+        .default([]),
+    })
+    .prefault({}),
   skipAuthors: z.array(z.string().trim().min(1)).default(['dependabot[bot]', 'renovate[bot]', 'github-actions[bot]']),
   excludeGlobs: z
     .array(z.string().trim().min(1))

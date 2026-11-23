@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import type { Job, Overview } from '../../../src/types.ts';
+import { REVIEW_TYPES, type Job, type Overview, type ReviewType } from '../../../src/types.ts';
 import { postJson, useJobs, useTick } from '../api.ts';
 import { clockTime, Progress, SeverityCounts, StateBadge, timeAgo } from '../ui.tsx';
 
@@ -32,8 +32,13 @@ function ActiveCard({ job }: { job: Job }) {
   );
 }
 
-function ReviewNow() {
+const REVIEW_LABEL: Record<ReviewType, string> = { code: 'Code', security: 'Security', consistency: 'Consistency' };
+
+function ReviewNow({ defaults }: { defaults: ReviewType[] | undefined }) {
   const [pr, setPr] = useState('');
+  // null until you change a tick box: then it follows the repo's usual reviews.
+  const [picked, setPicked] = useState<ReviewType[] | null>(null);
+  const reviews = picked ?? defaults ?? REVIEW_TYPES;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent) => {
@@ -42,7 +47,7 @@ function ReviewNow() {
     setBusy(true);
     setError(null);
     try {
-      const job = await postJson<Job>('/api/jobs', { pr: pr.trim() });
+      const job = await postJson<Job>('/api/jobs', picked ? { pr: pr.trim(), reviews: picked } : { pr: pr.trim() });
       setPr('');
       window.location.hash = `#/jobs/${job.id}`;
     } catch (err) {
@@ -58,9 +63,22 @@ function ReviewNow() {
       </label>
       <div className="row">
         <input id="pr-input" value={pr} onChange={(e) => setPr(e.target.value)} placeholder="https://github.com/owner/repo/pull/123 or owner/repo#123" />
-        <button className="btn" disabled={busy || !pr.trim()}>
+        <button className="btn" disabled={busy || !pr.trim() || !reviews.length}>
           {busy ? 'Adding…' : 'Review'}
         </button>
+      </div>
+      <div className="review-types small" role="group" aria-label="Reviews to run">
+        {REVIEW_TYPES.map((r) => (
+          <label key={r} className="check-inline">
+            <input
+              type="checkbox"
+              checked={reviews.includes(r)}
+              onChange={(e) => setPicked(REVIEW_TYPES.filter((t) => (t === r ? e.target.checked : reviews.includes(t))))}
+            />
+            {REVIEW_LABEL[r]}
+          </label>
+        ))}
+        {!picked && <span className="muted">the repo's usual reviews, unless you change them</span>}
       </div>
       {error && <div className="error small">{error}</div>}
     </form>
@@ -104,7 +122,7 @@ export function QueuePage({ overview }: { overview: Overview | null }) {
             {loaded ? `Nothing to review. Watching GitHub for PRs that request @${overview?.me ?? 'you'}.` : 'Loading…'}
           </p>
         )}
-        <ReviewNow />
+        <ReviewNow defaults={overview?.settings.reviews} />
       </section>
 
       <section>

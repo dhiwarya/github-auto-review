@@ -4,15 +4,24 @@ A personal review agent that runs on your own machine. When someone requests you
 
 ## What a review covers
 
-One provider does the whole review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page.
+You choose which reviews each PR gets, in Settings: a default set, exceptions per repo, and tick boxes when you add a PR by hand. Each review is its own model run, so fewer reviews use less of your subscription. All three are on by default.
+
+One provider does every review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page.
 
 Security reviews can trip a provider's safety filter (OpenAI may flag one as "possible cybersecurity risk"). That run then goes to the next model in the same order, ending with Claude if the fallback is on. Nothing is paused, since the refusal is about that PR, not the model. The security instructions say plainly that this is a defensive review of the team's own code, and never ask for exploit code or payloads.
 
-| Pass | Looks for |
+| Review | Looks for |
 | --- | --- |
-| Code + requirements | Bugs, edge cases, error handling, concurrency, weak tests, breaking changes. It also compares the code with the linked GitHub issues: requirements that are **missing**, implemented **differently** from the issue, or **inconsistent** with the PR description. |
+| Code | Bugs, edge cases, error handling, concurrency, weak tests, breaking changes. |
 | Security | Injection, auth gaps, secrets, SSRF, path traversal, unsafe deserialization, risky dependency or CI changes, each traced from input to sink. |
-| Double-check | Every blocker and major is re-checked in a second, separate run. Refuted findings are dropped, and uncertain ones are downgraded. |
+| Consistency | Whether the change agrees with everything around it: requirements in the linked GitHub issues that are **missing** or implemented **differently**, claims in the PR description the code doesn't back up, docs the change makes stale, and other open PRs that touch the same code. |
+
+Then every blocker and major is double-checked in a second, separate run. Refuted findings are dropped, and uncertain ones are downgraded.
+
+### The consistency review
+
+- **Docs.** Settings says where each repo's docs are: folders or files in the repo, a separate docs repository, and any notes for the reviewer. A separate docs repo is checked out read-only next to the PR for the review. Without an entry, the reviewer looks for docs in the repo itself.
+- **Other open PRs.** The app compares the PR with the repo's 40 most recently active open PRs, using the local repo copy (one GitHub request in total), and shows the reviewer the ones that change the same files. What the reviewer makes of them is listed in the summary as **Related open PRs**: overlap, conflict or duplicate. These are alerts only. They are never findings, so they can't lower the confidence, stop an approval or request changes. A PR with no activity for 30 days (configurable) counts as unmaintained, and an alert about it is always low confidence.
 
 After that, plain code (no model) checks each finding:
 - The quoted evidence must really exist in the file.
@@ -61,7 +70,7 @@ Adding labels needs triage access. If the token can't add them, the review still
 
 ## Comments
 
-Plain markdown with no emoji and no model details. Inline comments read `**Blocker (bug):** title`, then the problem and a suggestion. The summary opens with the counts (`**1 blocker, 2 minor**`, or `**No issues found.**`), then the overall assessment, requirements, findings not tied to a line, questions and what was fixed since the last review, each only when there is something to say. Every comment is signed `Auto Reviewer`. The model, confidence and double-check details stay on the dashboard.
+Plain markdown with no emoji and no model details. Inline comments read `**Blocker (bug):** title`, then the problem and a suggestion. The summary opens with the counts (`**1 blocker, 2 minor**`, or `**No issues found.**`), then the overall assessment, requirements, findings not tied to a line, questions and what was fixed since the last review, each only when there is something to say. Comments carry no signature; a hidden marker ties each one back to its finding. If some reviews were switched off, the summary says which ones it covers. The model, confidence and double-check details stay on the dashboard.
 
 ## Confidence and approval
 
@@ -69,6 +78,8 @@ Every review gets a confidence level: how sure it is that nothing blocks the PR.
 
 | Lowers it to | When |
 | --- | --- |
+| Low | The code review or the security review was switched off |
+| Medium | The consistency review was switched off, so the linked issue and docs weren't checked |
 | Medium | A major finding is open, there are questions for the author, the code only partly matches the linked issue, the change is large, or the diff was too long to send in full |
 | Low | The code doesn't match the linked issue, or the PR tried to get a credential out of the reviewer |
 | Either | A review pass rates its own confidence lower, saying what it couldn't check |
@@ -168,6 +179,8 @@ The dashboard is at http://127.0.0.1:4477, published on this machine's loopback 
 
 The CLI versions are pinned in the `Dockerfile` (`CLAUDE_CODE_VERSION`, `CODEX_VERSION`). Change them and start again with `--build` to update. On Linux, the container runs as user ID 1000, so the `data` folder must be writable by it.
 
+To open the dashboard from your other devices over Tailscale, proxy it with Tailscale Serve on the machine running it (`tailscale serve --bg 4477`, which needs `sudo` or `tailscale set --operator=$USER` once), and add the machine's Tailscale name to `.env` as `ALLOWED_HOSTS=my-server.tailnet-name.ts.net`. It's then at `https://my-server.tailnet-name.ts.net` for every device on your tailnet, and nowhere else.
+
 Codex runs each command in a read-only, offline sandbox, which needs Linux namespaces that Docker's default seccomp profile blocks. So `compose.yaml` turns seccomp off for this container, and in exchange drops every capability and blocks privilege escalation. On Linux hosts that restrict unprivileged user namespaces through AppArmor (Ubuntu 23.10 and later), also add `apparmor=unconfined` under `security_opt`.
 
 ## Dashboard
@@ -196,6 +209,9 @@ Everything is set on the dashboard's **Settings** page and stored in the app's d
 | Posting to GitHub | Dry run | On |
 | | How reviews are posted | Draft, with optional exceptions per repo |
 | | Approve PRs that have no blockers | On, when confidence is at least high |
+| Reviews | Code / Security / Consistency | All on, with optional exceptions per repo |
+| Consistency review | Another open PR is unmaintained after | 30 days without activity |
+| | Where the docs are | Not set: the reviewer looks in the repo itself |
 | Reviewer | Who reviews | Codex |
 | | If Codex runs out, use Claude instead | On |
 | | Double-check blockers and majors | On |

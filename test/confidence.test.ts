@@ -7,6 +7,7 @@ const finding = (severity: Severity, status: Finding['status'] = 'inline') => ({
 const input = (over: Partial<ConfidenceInput> = {}): ConfidenceInput => ({
   findings: [],
   openEarlier: [],
+  notRun: [],
   specStatus: 'aligned',
   questions: 0,
   large: false,
@@ -58,6 +59,12 @@ describe('confidence', () => {
   it('counts open blockers apart from confidence, ignoring dropped ones', () => {
     assert.equal(openBlockers([finding('blocker'), finding('blocker', 'dropped'), finding('major')]), 1);
     assert.equal(assess(input({ findings: [finding('blocker')] })).level, 'high', 'blockers stop approval on their own');
+  });
+
+  it('cannot be high when a review was switched off', () => {
+    assert.deepEqual(assess(input({ notRun: ['consistency'] })), { level: 'medium', reasons: ["No consistency review ran, so the linked issue and docs weren't checked"] });
+    assert.equal(assess(input({ notRun: ['security'] })).level, 'low');
+    assert.equal(assess(input({ notRun: ['code'] })).level, 'low');
   });
 
   it('compares levels', () => {

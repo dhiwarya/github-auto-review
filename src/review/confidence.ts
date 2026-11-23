@@ -1,4 +1,4 @@
-import type { Confidence, Finding, SpecStatus } from '../types.ts';
+import type { Confidence, Finding, ReviewType, SpecStatus } from '../types.ts';
 
 // How sure a review is that nothing blocks the PR. It starts at high and anything that
 // leaves doubt lowers it; open blockers are counted separately because they always stop
@@ -11,6 +11,7 @@ export const atLeast = (level: Confidence, min: Confidence) => RANK[level] >= RA
 export interface ConfidenceInput {
   findings: Finding[]; // this review's posted findings
   openEarlier: Finding[]; // findings from earlier reviews of the PR that are still open
+  notRun: ReviewType[]; // reviews that were switched off for this PR
   specStatus: SpecStatus;
   questions: number;
   large: boolean;
@@ -34,6 +35,10 @@ export function assess(i: ConfidenceInput): Assessment {
     reasons.push(why);
   };
 
+  // A review that didn't run found nothing because it didn't look.
+  if (i.notRun.includes('code')) lower('low', 'No code review ran');
+  if (i.notRun.includes('security')) lower('low', 'No security review ran');
+  if (i.notRun.includes('consistency')) lower('medium', "No consistency review ran, so the linked issue and docs weren't checked");
   const majors = [...i.findings, ...i.openEarlier].filter((f) => f.severity === 'major').length;
   if (majors) lower('medium', `${plural(majors, 'major finding')} open`);
   if (i.specStatus === 'misaligned') lower('low', "Doesn't match the linked issue");

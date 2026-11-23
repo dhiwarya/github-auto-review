@@ -189,6 +189,8 @@ export class Db {
       ['jobs', 'confidence_notes', 'TEXT'],
       ['jobs', 'approve_note', 'TEXT'],
       ['jobs', 'kind', "TEXT NOT NULL DEFAULT 'review'"],
+      ['jobs', 'reviews', 'TEXT'],
+      ['jobs', 'related_prs', 'TEXT'],
       ['runs', 'run_key', 'TEXT'],
       ['runs', 'prompt_chars', 'INTEGER'],
       ['runs', 'output', 'TEXT'],
@@ -217,13 +219,13 @@ export class Db {
     return this.get<Job>('SELECT * FROM jobs WHERE id = ?', id);
   }
 
-  insertJob(j: Pick<Job, 'repo' | 'pr_number' | 'pr_title' | 'pr_url' | 'author' | 'head_sha' | 'base_sha' | 'since_sha' | 'mode' | 'source' | 'dry_run' | 'state' | 'additions' | 'deletions' | 'changed_files'> & { kind?: Job['kind']; skip_reason?: string | null }): Job {
+  insertJob(j: Pick<Job, 'repo' | 'pr_number' | 'pr_title' | 'pr_url' | 'author' | 'head_sha' | 'base_sha' | 'since_sha' | 'mode' | 'source' | 'dry_run' | 'state' | 'additions' | 'deletions' | 'changed_files'> & { kind?: Job['kind']; reviews?: string | null; skip_reason?: string | null }): Job {
     const t = nowIso();
     const res = this.run(
-      `INSERT INTO jobs (repo, pr_number, pr_title, pr_url, author, head_sha, base_sha, since_sha, kind, mode, source, dry_run, state,
+      `INSERT INTO jobs (repo, pr_number, pr_title, pr_url, author, head_sha, base_sha, since_sha, kind, reviews, mode, source, dry_run, state,
          skip_reason, additions, deletions, changed_files, created_at, updated_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      j.repo, j.pr_number, j.pr_title, j.pr_url, j.author, j.head_sha, j.base_sha, j.since_sha, j.kind ?? 'review', j.mode, j.source, j.dry_run, j.state,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      j.repo, j.pr_number, j.pr_title, j.pr_url, j.author, j.head_sha, j.base_sha, j.since_sha, j.kind ?? 'review', j.reviews ?? null, j.mode, j.source, j.dry_run, j.state,
       j.skip_reason ?? null, j.additions, j.deletions, j.changed_files, t, t, j.state === 'skipped' ? t : null,
     );
     const job = this.job(Number(res.lastInsertRowid))!;

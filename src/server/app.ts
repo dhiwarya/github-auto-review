@@ -12,12 +12,15 @@ import type { Poller } from '../jobs/poller.ts';
 import type { Worker } from '../jobs/worker.ts';
 import type { Router } from '../llm/router.ts';
 import { PostRefused, type ReviewPipeline } from '../review/pipeline.ts';
-import type { Job, JobDetail, JobState, LeaderboardKind, Overview, StreamMessage } from '../types.ts';
+import { REVIEW_TYPES, type Job, type JobDetail, type JobState, type LeaderboardKind, type Overview, type StreamMessage } from '../types.ts';
 import { leaderboard } from './leaderboard.ts';
 
 interface Deps {
   cfg: SettingsStore;
   host: string;
+  // Host names besides this machine's own that may open the dashboard, such as its
+  // Tailscale name when Tailscale Serve proxies it.
+  allowedHosts: string[];
   port: number;
   db: Db;
   gh: GitHub;
@@ -35,7 +38,7 @@ export function overview({ cfg, db, gh, router, worker, poller }: Deps): Overvie
   return {
     me: gh.me,
     github_auth: gh.authSource,
-    settings: { provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
+    settings: { reviews: REVIEW_TYPES.filter((r) => cfg.reviews[r]), provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
     needs_setup: cfg.needsSetup,
     dry_run: cfg.dryRun,
     default_mode: cfg.defaultMode,
@@ -67,14 +70,14 @@ export async function startServer(deps: Deps) {
   const { cfg, db, gh, worker, poller } = deps;
   // The dashboard holds a live-updates connection open; closing must not wait for it.
   const app = Fastify({ logger: false, forceCloseConnections: true });
-  const loopback = new Set(['127.0.0.1', 'localhost', '[::1]']);
+  const allowed = new Set(['127.0.0.1', 'localhost', '[::1]', ...deps.allowedHosts.map((h) => h.toLowerCase())]);
 
-  // The dashboard is for this machine only. Checking Host blocks DNS-rebinding pages (on any
+  // The dashboard is for this machine (plus any ALLOWED_HOSTS) only. Checking Host blocks DNS-rebinding pages (on any
   // port, since Docker can publish it on another one), and requiring a custom header on
   // writes blocks other websites from posting to the API.
   app.addHook('onRequest', async (req, reply) => {
     const hostname = (req.headers.host ?? '').replace(/:\d+$/, '').toLowerCase();
-    if (!loopback.has(hostname)) return reply.code(403).send({ error: 'forbidden host' });
+    if (!allowed.has(hostname)) return reply.code(403).send({ error: 'forbidden host' });
     if (req.method !== 'GET' && req.headers['x-auto-reviewer'] !== '1') return reply.code(403).send({ error: 'missing header' });
   });
 
@@ -101,14 +104,18 @@ export async function startServer(deps: Deps) {
   // A step's full text (command output, a tool's result), loaded when you open it.
   app.get<{ Params: { id: string } }>('/api/steps/:id', async (req) => ({ detail: db.stepDetail(Number(req.params.id)) }));
 
-  app.post<{ Body: { pr?: string } }>('/api/jobs', async (req, reply) => {
+  app.post<{ Body: { pr?: string; reviews?: unknown } }>('/api/jobs', async (req, reply) => {
     const ref = parsePrRef(req.body?.pr ?? '');
     if (!ref) return reply.code(400).send({ error: 'Use a PR link or owner/repo#123' });
+    // Optional: the reviews to run on this PR, instead of the repo's usual set.
+    const asked = req.body?.reviews;
+    const reviews = Array.isArray(asked) ? REVIEW_TYPES.filter((r) => asked.includes(r)) : undefined;
+    if (reviews && !reviews.length) return reply.code(400).send({ error: 'Pick at least one review' });
     if (!cfg.isRepoAllowed(ref.repo)) return reply.code(400).send({ error: `${ref.repo} isn't in your repos list (Settings → Repositories)` });
     try {
       const pr = await getPr(gh, ref.repo, ref.number);
       if (pr.state !== 'open') return reply.code(400).send({ error: 'That PR is not open' });
-      return poller.enqueue(pr, 'manual');
+      return poller.enqueue(pr, 'manual', reviews);
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) });
     }

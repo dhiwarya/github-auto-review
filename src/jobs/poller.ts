@@ -4,7 +4,7 @@ import { rateLimited, type GitHub } from '../github/client.ts';
 import { getPr, type PrInfo } from '../github/prs.ts';
 import { RepoWatcher, type OpenPr } from '../github/watch.ts';
 import { bus } from '../bus.ts';
-import { ACTIVE_STATES, type Job } from '../types.ts';
+import { ACTIVE_STATES, type Job, type ReviewType } from '../types.ts';
 import type { Worker } from './worker.ts';
 import type { OutcomeSync } from './sync.ts';
 
@@ -227,8 +227,9 @@ export class Poller {
     return this.enqueueRecheck(pr, 'manual');
   }
 
-  // Creates the job for this PR's current head commit, if there isn't one yet.
-  enqueue(pr: PrInfo, source: Job['source']): Job {
+  // Creates the job for this PR's current head commit, if there isn't one yet. `reviews`
+  // overrides the repo's usual set, for a PR added from the dashboard.
+  enqueue(pr: PrInfo, source: Job['source'], reviews?: ReviewType[]): Job {
     const existing = this.db.jobsForPr(pr.repo, pr.number);
     const same = existing.find((j) => j.head_sha === pr.headSha);
     if (same) {
@@ -254,6 +255,7 @@ export class Poller {
       author: pr.author,
       head_sha: pr.headSha,
       base_sha: pr.baseSha,
+      reviews: (reviews?.length ? reviews : this.cfg.reviewsFor(pr.repo)).join(','),
       mode: this.cfg.modeFor(pr.repo),
       source,
       dry_run: this.cfg.dryRun ? 1 : 0,

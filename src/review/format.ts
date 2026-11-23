@@ -1,8 +1,9 @@
-import { findingMarker, SIGNATURE } from '../github/publish.ts';
+import { findingMarker } from '../github/publish.ts';
 import type { LinkedIssue } from '../github/prs.ts';
-import type { Finding, Severity, SpecStatus } from '../types.ts';
+import { REVIEW_TYPES, type Finding, type RelatedPr, type ReviewType, type Severity, type SpecStatus } from '../types.ts';
 
-// Plain markdown: no emoji, no model details. Every comment ends with the signature.
+// Plain markdown: no emoji, no model details, no signature. A hidden marker ties each
+// comment back to its finding.
 
 const SEVERITY_LABEL: Record<Severity, string> = { blocker: 'Blocker', major: 'Major', minor: 'Minor', nit: 'Nit' };
 const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit'];
@@ -11,7 +12,7 @@ const heading = (f: Finding) => `**${SEVERITY_LABEL[f.severity]} (${f.category})
 const oneLine = (text: string) => text.replace(/\s*\n+\s*/g, ' ').trim();
 
 export function inlineBody(f: Finding): string {
-  return [heading(f), '', f.problem, '', `**Suggestion:** ${f.suggestion}`, '', SIGNATURE, findingMarker(f.id)].join('\n');
+  return [heading(f), '', f.problem, '', `**Suggestion:** ${f.suggestion}`, findingMarker(f.id)].join('\n');
 }
 
 // "2 blockers, 1 major, 3 minor"
@@ -39,6 +40,8 @@ export interface SummaryInput {
   issues: LinkedIssue[];
   findings: Finding[]; // posted ones (inline + summary)
   questions: string[];
+  related: RelatedPr[]; // other open PRs worth a look: alerts, not findings
+  reviews: ReviewType[]; // the reviews that ran
   resolved: Finding[];
   large: boolean;
   excluded: string[];
@@ -73,12 +76,23 @@ export function summaryBody(s: SummaryInput): string {
     out.push('**Fixed since the last review**', '', ...s.resolved.map((f) => `- ~~${f.title}~~${f.file ? ` (\`${f.file}\`)` : ''}`), '');
   }
 
+  if (s.related.length) {
+    out.push('**Related open PRs** (for awareness, not a request to change anything)', '');
+    for (const r of s.related) {
+      const sure = r.staleDays !== null ? `low confidence: no activity for ${r.staleDays} days` : `${r.confidence} confidence`;
+      out.push(`- #${r.number} (${r.relation}, ${sure}): ${oneLine(r.note)}`);
+    }
+    out.push('');
+  }
+
   const notes: string[] = [];
+  const skipped = REVIEW_TYPES.filter((r) => !s.reviews.includes(r));
+  if (skipped.length) notes.push(`Covers ${s.reviews.join(' and ')} only; no ${skipped.join(' or ')} review was run.`);
   if (s.large) notes.push('Large change: only the highest risks are covered.');
   if (s.excluded.length) notes.push(`Skipped ${s.excluded.length} generated or lock file${s.excluded.length > 1 ? 's' : ''}.`);
   if (notes.length) out.push(notes.join(' '), '');
 
-  out.push(SIGNATURE, `<!-- ai-review sha=${s.headSha} job=${s.jobId} -->`);
+  out.push(`<!-- ai-review sha=${s.headSha} job=${s.jobId} -->`);
   return out.join('\n');
 }
 
@@ -117,6 +131,6 @@ export function recheckBody(r: RecheckInput): string {
     out.push('');
   }
 
-  out.push(SIGNATURE, `<!-- ai-review sha=${r.headSha} job=${r.jobId} recheck -->`);
+  out.push(`<!-- ai-review sha=${r.headSha} job=${r.jobId} recheck -->`);
   return out.join('\n');
 }

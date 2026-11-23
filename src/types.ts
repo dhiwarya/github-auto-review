@@ -2,7 +2,31 @@
 
 export type Provider = 'claude' | 'codex';
 export type ReviewMode = 'draft' | 'publish';
-export type Pass = 'main' | 'security';
+// The kinds of review a job can run. Each is its own model run ("main" is the code review).
+export type ReviewType = 'code' | 'security' | 'consistency';
+export const REVIEW_TYPES: ReviewType[] = ['code', 'security', 'consistency'];
+export type Pass = 'main' | 'security' | 'consistency';
+export const PASS_OF: Record<ReviewType, Pass> = { code: 'main', security: 'security', consistency: 'consistency' };
+
+// Which reviews a job runs. Jobs from before the choice existed ran code and security.
+export const reviewsOf = (job: { reviews: string | null }): ReviewType[] => {
+  const picked = (job.reviews ?? 'code,security').split(',').filter((r): r is ReviewType => (REVIEW_TYPES as string[]).includes(r));
+  return picked.length ? picked : ['code', 'security'];
+};
+
+// Another open PR that touches the same code. Shown as an alert only: it never counts as
+// a finding, lowers confidence or stops an approval.
+export interface RelatedPr {
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  relation: 'overlap' | 'conflict' | 'duplicate';
+  note: string;
+  confidence: Confidence;
+  staleDays: number | null; // set when the PR has had no activity for longer than the stale limit
+  files: string[]; // files both PRs change
+}
 
 export type JobState =
   | 'queued'
@@ -23,7 +47,7 @@ export type JobKind = 'review' | 'recheck';
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit';
 export const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit'];
 
-export type Category = 'bug' | 'security' | 'requirement' | 'design' | 'test' | 'performance';
+export type Category = 'bug' | 'security' | 'requirement' | 'docs' | 'design' | 'test' | 'performance';
 export type Confidence = 'high' | 'medium' | 'low';
 export type SpecStatus = 'aligned' | 'partial' | 'misaligned' | 'no_spec' | 'not_checked';
 export type Verification = 'confirmed' | 'refuted' | 'uncertain' | 'skipped' | 'not_needed';
@@ -45,6 +69,10 @@ export interface Job {
   base_sha: string;
   since_sha: string | null;
   kind: JobKind;
+  // The reviews it runs, comma-separated ("code,security,consistency"); see reviewsOf().
+  reviews: string | null;
+  // Other open PRs touching the same code, as JSON (RelatedPr[]); set by the consistency review.
+  related_prs: string | null;
   mode: ReviewMode;
   source: 'request' | 'manual';
   dry_run: number;
@@ -134,6 +162,10 @@ export interface Evidence {
   history: { file: string; commits: number }[];
   previousFindings: number;
   discussion: { threadReplies: number; conversation: number } | null; // re-checks only
+  // Consistency reviews only: where the docs were read from, and the other open PRs that
+  // change the same files.
+  docs?: { paths: string[]; repo: string | null };
+  otherPrs?: { number: number; title: string; url: string; files: number; staleDays: number | null }[];
   promptChars: number;
 }
 
@@ -207,6 +239,7 @@ export interface ProviderStatus {
 }
 
 export interface ReviewerSettings {
+  reviews: ReviewType[]; // the default set
   provider: Provider;
   fallbackToOther: boolean;
   doubleCheck: boolean;

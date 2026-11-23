@@ -133,6 +133,51 @@ export class RepoCache {
     });
   }
 
+  // The heads of other PRs in the same repo, in one fetch. PRs that no longer exist are
+  // left out of the result.
+  async fetchPrHeads(repo: string, prNumbers: number[]): Promise<Map<number, string>> {
+    const heads = new Map<number, string>();
+    if (!prNumbers.length) return heads;
+    await this.withLock(repo, async () => {
+      await this.ensure(repo);
+      const refspecs = prNumbers.map((n) => `+refs/pull/${n}/head:refs/prs/${n}`);
+      // One missing ref fails the whole fetch, so fall back to one at a time.
+      await this.git(repo, ['fetch', '-q', '--no-tags', 'origin', ...refspecs]).catch(async () => {
+        for (const spec of refspecs) await this.git(repo, ['fetch', '-q', '--no-tags', 'origin', spec]).catch(() => {});
+      });
+      for (const n of prNumbers) {
+        const sha = await this.git(repo, ['rev-parse', '--verify', '-q', `refs/prs/${n}`]).then((s) => s.trim(), () => '');
+        if (sha) heads.set(n, sha);
+      }
+    });
+    return heads;
+  }
+
+  // Brings a repo's default branch up to date and returns its commit. Used for a repo that
+  // is only read, such as one that holds another repo's docs.
+  async fetchDefault(repo: string): Promise<string> {
+    return this.withLock(repo, async () => {
+      await this.ensure(repo);
+      await this.git(repo, ['fetch', '-q', '--no-tags', 'origin', '+HEAD:refs/remotes/origin/HEAD']);
+      return (await this.git(repo, ['rev-parse', 'refs/remotes/origin/HEAD'])).trim();
+    });
+  }
+
+  // A working copy of one commit at a path you choose, for placing one repo inside another's
+  // checkout. Removing the outer folder is enough; cleanup() tidies this repo's records.
+  async worktreeAt(repo: string, sha: string, dir: string): Promise<Checkout> {
+    await this.withLock(repo, () => this.git(repo, ['worktree', 'add', '-q', '--detach', dir, sha]));
+    return {
+      dir,
+      cleanup: async () => {
+        await this.withLock(repo, async () => {
+          await this.git(repo, ['worktree', 'remove', '--force', dir]).catch(() => fs.rm(dir, { recursive: true, force: true }));
+          await this.git(repo, ['worktree', 'prune']).catch(() => {});
+        });
+      },
+    };
+  }
+
   async hasCommit(repo: string, sha: string): Promise<boolean> {
     try {
       await this.git(repo, ['cat-file', '-e', `${sha}^{commit}`]);

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import type { Evidence, EvidenceFile, Finding, Job, JobDetail, Run, Step, StepKind } from '../../../src/types.ts';
+import { PASS_OF, reviewsOf, type Evidence, type EvidenceFile, type Finding, type Job, type JobDetail, type Run, type Step, type StepKind } from '../../../src/types.ts';
 import { getJson } from '../api.ts';
 import { compact, duration, shortSha } from '../ui.tsx';
 
@@ -126,6 +126,48 @@ function EvidenceBody({ evidence }: { evidence: Evidence }) {
           <span className="muted">None</span>
         )}
       </dd>
+
+      {evidence.docs && (
+        <>
+          <dt>Docs</dt>
+          <dd>
+            {evidence.docs.paths.length || evidence.docs.repo ? (
+              <>
+                {evidence.docs.paths.length > 0 && <span>In the repo: {evidence.docs.paths.join(', ')}. </span>}
+                {evidence.docs.repo && <span>Docs repository: {evidence.docs.repo}.</span>}
+              </>
+            ) : (
+              <span className="muted">No location set in Settings: the reviewer looks in the repo itself</span>
+            )}
+          </dd>
+        </>
+      )}
+
+      {evidence.otherPrs && (
+        <>
+          <dt>Other open PRs</dt>
+          <dd>
+            {evidence.otherPrs.length ? (
+              <ul className="plain-list">
+                {evidence.otherPrs.map((p) => (
+                  <li key={p.number}>
+                    <a href={p.url} target="_blank" rel="noreferrer">
+                      #{p.number}
+                    </a>{' '}
+                    {p.title}{' '}
+                    <span className="small muted">
+                      · shares {p.files} file{p.files === 1 ? '' : 's'}
+                      {p.staleDays !== null && ` · no activity for ${p.staleDays} days`}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <span className="muted">None change the same files</span>
+            )}
+          </dd>
+        </>
+      )}
 
       {d && (
         <>
@@ -444,10 +486,16 @@ export function ProcessView({ detail }: { detail: JobDetail }) {
         </Stage>
       ) : (
         <>
-          <Stage n={n++} title="Review" state={mergeStates(passState(attempts('main'), active), passState(attempts('security'), active))} meta="both run at the same time">
+          <Stage
+            n={n++}
+            title="Review"
+            state={reviewsOf(job).map((r) => passState(attempts(PASS_OF[r]), active)).reduce(mergeStates)}
+            meta={reviewsOf(job).length > 1 ? 'they run at the same time' : undefined}
+          >
             <div className="pass-grid">
-              <PassCard title="Code review" attempts={attempts('main')} jobActive={active} emptyNote="Starts once the evidence is ready." />
-              <PassCard title="Security review" attempts={attempts('security')} jobActive={active} emptyNote="Starts once the evidence is ready." />
+              {reviewsOf(job).map((r) => (
+                <PassCard key={r} title={`${r[0].toUpperCase()}${r.slice(1)} review`} attempts={attempts(PASS_OF[r])} jobActive={active} emptyNote="Starts once the evidence is ready." />
+              ))}
             </div>
           </Stage>
           <Stage n={n++} title="Double-check" state={passState(attempts('verify'), active)}>

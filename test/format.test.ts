@@ -12,20 +12,20 @@ const finding = (id: number, severity: Severity, over: Partial<Finding> = {}) =>
 const summary = (over: Partial<SummaryInput> = {}) =>
   summaryBody({
     repo: 'acme/api', headSha: 'a'.repeat(40), summaries: ['Adds retries.', ''], specStatus: 'no_spec', specNotes: '', issues: [],
-    findings: [], questions: [], resolved: [], large: false, excluded: [], inlineFailed: false, jobId: 7, ...over,
+    findings: [], questions: [], related: [], reviews: ['code', 'security', 'consistency'], resolved: [], large: false, excluded: [], inlineFailed: false, jobId: 7, ...over,
   });
 
 const EMOJI = /\p{Extended_Pictographic}/u;
 
 describe('comment format', () => {
-  it('writes inline comments plainly, signed Auto Reviewer, with a hidden marker', () => {
+  it('writes inline comments plainly, unsigned, with a hidden marker', () => {
     const body = inlineBody(finding(12, 'blocker'));
     assert.equal(
       body,
-      '**Blocker (bug):** Title 12\n\nIt breaks\nwhen empty.\n\n**Suggestion:** Check for empty.\n\n<sub>Auto Reviewer</sub>\n<!-- ai-finding:12 -->',
+      '**Blocker (bug):** Title 12\n\nIt breaks\nwhen empty.\n\n**Suggestion:** Check for empty.\n<!-- ai-finding:12 -->',
     );
     assert.doesNotMatch(body, EMOJI);
-    assert.doesNotMatch(body, /AI-assisted|gpt-6|confidence/i, 'no model details on GitHub');
+    assert.doesNotMatch(body, /AI-assisted|Auto Reviewer|gpt-6|confidence/i, 'no signature or model details on GitHub');
   });
 
   it('counts findings in words', () => {
@@ -47,7 +47,7 @@ describe('comment format', () => {
     assert.doesNotMatch(summary({ specStatus: 'not_checked' }), /Requirements/);
   });
 
-  it('adds only the sections that have something in them, and signs at the end', () => {
+  it('adds only the sections that have something in them, ending with the hidden marker', () => {
     const body = summary({
       findings: [finding(1, 'minor', { status: 'summary', line: null })],
       questions: ['Should it notify the merchant?'],
@@ -58,7 +58,7 @@ describe('comment format', () => {
     assert.match(body, /\*\*Not tied to a changed line\*\*\n\n- \*\*Minor \(bug\):\*\* Title 1 \(`src\/a\.ts`\)\n  It breaks when empty\.\n  Suggestion: Check for empty\.\n  <!-- ai-finding:1 -->/);
     assert.match(body, /\*\*Questions\*\*\n\n- Should it notify the merchant\?/);
     assert.match(body, /\*\*Fixed since the last review\*\*\n\n- ~~Unused import~~ \(`src\/a\.ts`\)/);
-    assert.match(body, /Large change: only the highest risks are covered\. Skipped 1 generated or lock file\.\n\n<sub>Auto Reviewer<\/sub>\n<!-- ai-review sha=a{40} job=7 -->$/);
+    assert.match(body, /Large change: only the highest risks are covered\. Skipped 1 generated or lock file\.\n\n<!-- ai-review sha=a{40} job=7 -->$/);
     assert.doesNotMatch(body, EMOJI);
     assert.doesNotMatch(summary(), /Questions|Fixed since|Not tied/);
   });

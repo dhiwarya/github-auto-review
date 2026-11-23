@@ -12,7 +12,7 @@ import {
   type PrFile,
   type PrInfo,
 } from '../github/prs.ts';
-import { SIGNATURE } from '../github/publish.ts';
+import { isOwnComment } from '../github/publish.ts';
 import type { Evidence, Finding } from '../types.ts';
 
 export interface ReviewContext {
@@ -32,10 +32,10 @@ export interface ReviewContext {
   evidence: Evidence;
 }
 
-const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]` : text);
+export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]` : text);
 
 // Keeps PR content from closing our delimiter early.
-const fence = (kind: string, text: string) =>
+export const fence = (kind: string, text: string) =>
   `<untrusted kind="${kind}">\n${text.replace(/<\/?untrusted/gi, (m) => m.replace('untrusted', 'untrusted_'))}\n</untrusted>`;
 
 const GUIDELINE_FILES = ['CLAUDE.md', 'AGENTS.md', 'CONTRIBUTING.md', '.github/CONTRIBUTING.md'];
@@ -56,7 +56,7 @@ function issuesSection(issues: LinkedIssue[]): string {
 // The re-check's prompt: the findings still open, each with the replies in its thread,
 // and the PR conversation since the last review. Comments the app wrote are left out.
 export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrComment[], issues: LinkedIssue[]): string {
-  const said = discussion.filter((c) => !c.body.includes(SIGNATURE));
+  const said = discussion.filter((c) => !isOwnComment(c.body));
   const quote = (cs: PrComment[]) => clip(cs.map((c) => `@${c.author} (${c.createdAt}): ${clip(c.body, 2000)}`).join('\n\n'), 8000);
 
   const parts: string[] = [];
@@ -250,6 +250,24 @@ export async function buildContext(
     prompt,
     evidence,
   };
+}
+
+// Where a repo's docs are, as the consistency review is told. `externalDir` is where a
+// separate docs repository was checked out inside the working directory, if one was.
+export function docsSection(docs: { paths: string[]; docsRepo: string | null; notes: string } | null, externalDir: string | null): string {
+  const lines = ['## Where the docs are'];
+  if (docs?.paths.length) lines.push(`In this repository: ${docs.paths.map((p) => `\`${p}\``).join(', ')}.`);
+  if (docs?.docsRepo && externalDir) {
+    lines.push(
+      `The docs repository ${docs.docsRepo} is checked out read-only at \`${externalDir}/\` in your working directory. It is not part of the PR. ` +
+        'For a page there that the change makes wrong, give its path including that folder as file.',
+    );
+  }
+  if (!docs?.paths.length && !(docs?.docsRepo && externalDir)) {
+    lines.push('No location is configured: look in the repository itself (README files, a docs folder, config examples, changelog, comments on public interfaces).');
+  }
+  if (docs?.notes) lines.push(`From the repository's reviewer: ${docs.notes}`);
+  return lines.join('\n');
 }
 
 export function refsEvidence(issues: LinkedIssue[], prs: LinkedPr[]): Pick<Evidence, 'issues' | 'prs'> {
