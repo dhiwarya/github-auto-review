@@ -38,7 +38,7 @@ export function overview({ cfg, db, gh, router, worker, poller }: Deps): Overvie
   return {
     me: gh.me,
     github_auth: gh.authSource,
-    settings: { reviews: REVIEW_TYPES.filter((r) => cfg.reviews[r]), provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
+    settings: { reviews: REVIEW_TYPES.filter((r) => cfg.reviews[r]), profile: cfg.reviewProfile, provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
     needs_setup: cfg.needsSetup,
     dry_run: cfg.dryRun,
     default_mode: cfg.defaultMode,
@@ -134,6 +134,11 @@ export async function startServer(deps: Deps) {
     }
   });
 
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/full-review', async (req, reply) => {
+    try { return await poller.fullReviewFromDashboard(Number(req.params.id)); }
+    catch (err) { return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) }); }
+  });
+
   app.post<{ Params: { id: string } }>('/api/jobs/:id/cancel', async (req) => {
     worker.cancel(Number(req.params.id), 'cancelled from the dashboard');
     return { ok: true };
@@ -148,11 +153,11 @@ export async function startServer(deps: Deps) {
     }
   });
 
-  app.post<{ Params: { id: string }; Body: { mode?: string } }>('/api/jobs/:id/post', async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { mode?: string; allowPartial?: boolean } }>('/api/jobs/:id/post', async (req, reply) => {
     const mode = req.body?.mode;
     if (mode !== 'draft' && mode !== 'publish') return reply.code(400).send({ error: 'mode must be draft or publish' });
     try {
-      return await deps.pipeline.postDryRun(Number(req.params.id), mode);
+      return await deps.pipeline.postDryRun(Number(req.params.id), mode, req.body?.allowPartial === true);
     } catch (err) {
       return reply.code(err instanceof PostRefused ? 409 : 500).send({ error: err instanceof Error ? err.message : String(err) });
     }

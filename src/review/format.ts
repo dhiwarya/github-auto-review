@@ -8,7 +8,7 @@ import { REVIEW_TYPES, type Finding, type RelatedPr, type ReviewType, type Sever
 const SEVERITY_LABEL: Record<Severity, string> = { blocker: 'Blocker', major: 'Major', minor: 'Minor', nit: 'Nit' };
 const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit'];
 
-const heading = (f: Finding) => `**${SEVERITY_LABEL[f.severity]} (${f.category}):** ${f.title}`;
+const heading = (f: Finding) => `**${f.confidence === 'low' && (f.verification === 'uncertain' || f.verification === 'skipped') ? 'Unverified concern · ' : ''}${SEVERITY_LABEL[f.severity]} (${f.category}):** ${f.title}`;
 const oneLine = (text: string) => text.replace(/\s*\n+\s*/g, ' ').trim();
 
 export function inlineBody(f: Finding): string {
@@ -47,11 +47,13 @@ export interface SummaryInput {
   excluded: string[];
   inlineFailed: boolean;
   jobId: number;
+  complete?: boolean;
 }
 
 export function summaryBody(s: SummaryInput): string {
   const counts = countsLine(s.findings);
-  const out: string[] = [counts ? `**${counts}**` : '**No issues found.**', ''];
+  const out: string[] = [counts ? `**${counts}**` : s.complete === undefined ? '**No issues found.**' : s.complete ? '**No new findings.**' : '**No new findings in the reviewed sections.**', ''];
+  if (s.complete !== undefined) out.unshift(s.complete ? '**Review complete.**' : '**Review incomplete.** Unchecked sections remain; this result is retained locally until recovery completes.', '');
   for (const text of s.summaries.map((t) => t.trim()).filter(Boolean)) out.push(text, '');
 
   const requirements = requirementsLine(s.specStatus, s.specNotes, s.issues, s.repo);

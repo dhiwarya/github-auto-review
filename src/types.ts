@@ -5,7 +5,7 @@ export type ReviewMode = 'draft' | 'publish';
 // The kinds of review a job can run. Each is its own model run ("main" is the code review).
 export type ReviewType = 'code' | 'security' | 'consistency';
 export const REVIEW_TYPES: ReviewType[] = ['code', 'security', 'consistency'];
-export type Pass = 'main' | 'security' | 'consistency';
+export type Pass = 'main' | 'security' | 'consistency' | 'adversarial';
 export const PASS_OF: Record<ReviewType, Pass> = { code: 'main', security: 'security', consistency: 'consistency' };
 
 // Which reviews a job runs. Jobs from before the choice existed ran code and security.
@@ -42,7 +42,7 @@ export const ACTIVE_STATES: JobState[] = ['queued', 'running', 'waiting'];
 // review: reads the code (all of it, or the commits since the last review).
 // recheck: the review was requested again with no new commits, so it re-checks the
 // findings still open from earlier reviews instead of reviewing the code again.
-export type JobKind = 'review' | 'recheck';
+export type JobKind = 'review' | 'recheck' | 'audit';
 
 export type Severity = 'blocker' | 'major' | 'minor' | 'nit';
 export const SEVERITIES: Severity[] = ['blocker', 'major', 'minor', 'nit'];
@@ -103,6 +103,43 @@ export interface Job {
   updated_at: string;
   // Filled in by list queries.
   counts?: Record<Severity, number>;
+  review_policy?: string | null;
+  review_report?: string | null;
+}
+
+export interface StrictCoverage {
+  section_id: string;
+  status: 'examined' | 'unverified';
+  dependencies: string[];
+  tests: string[];
+  configuration: string[];
+  notes: string;
+}
+
+export interface StrictStage {
+  key: string;
+  purpose: string;
+  provider: Provider | null;
+  model: string | null;
+  state: 'done' | 'incomplete';
+  error: string | null;
+  coverage: StrictCoverage[];
+  continuations?: number;
+}
+
+export interface StrictReport {
+  version: number;
+  sections: { id: string; file: string }[];
+  excluded: string[];
+  stages: StrictStage[];
+  gaps: string[];
+  approvalBlocks: string[];
+  complete: boolean;
+  inheritedFrom?: number;
+  requirements?: { stage: string; ref: string; status: string; reason: string; criterion?: string; scopeEvidence?: string }[];
+  recovery?: string;
+  workload?: { plannedDiscoveryRuns: number; synthesisRuns: number; verificationReserve: number; maxRuns: number };
+  sources?: { id: string; title: string; kind: string; chars: number; digest: string; sections: number }[];
 }
 
 export interface Finding {
@@ -167,6 +204,7 @@ export interface Evidence {
   docs?: { paths: string[]; repo: string | null };
   otherPrs?: { number: number; title: string; url: string; files: number; staleDays: number | null }[];
   promptChars: number;
+  contextGaps?: string[];
 }
 
 // reviewed: its diff is in the prompt. too_long: the diff didn't fit, the model was told
@@ -240,6 +278,7 @@ export interface ProviderStatus {
 
 export interface ReviewerSettings {
   reviews: ReviewType[]; // the default set
+  profile?: 'standard' | 'strict';
   provider: Provider;
   fallbackToOther: boolean;
   doubleCheck: boolean;
@@ -309,5 +348,6 @@ export interface PostPreview {
   // requestChanges is set (a re-check with blockers or majors still open).
   approveNote: string | null;
   requestChanges: boolean;
+  partial?: boolean;
   labels: Record<ReviewMode, string>;
 }

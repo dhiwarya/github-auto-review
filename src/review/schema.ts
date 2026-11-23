@@ -166,6 +166,43 @@ export const ConsistencyOut = ReviewOut.extend({
 });
 export type ConsistencyOut = z.infer<typeof ConsistencyOut>;
 
+const coverageJson = {
+  type: 'object', additionalProperties: false,
+  required: ['section_id', 'status', 'dependencies', 'tests', 'configuration', 'notes'],
+  properties: {
+    section_id: str, status: enumOf(['examined', 'unverified']),
+    dependencies: { type: 'array', items: str }, tests: { type: 'array', items: str },
+    configuration: { type: 'array', items: str }, notes: str,
+  },
+};
+const requirementJson = {
+  type: 'object', additionalProperties: false, required: ['ref', 'criterion', 'status', 'reason', 'scope_evidence'],
+  properties: { ref: str, criterion: str, status: enumOf(['implemented', 'missing', 'deferred', 'out_of_scope', 'externally_unverifiable', 'not_checked']), reason: str, scope_evidence: str },
+};
+export const strictReviewSchema = {
+  ...reviewSchema,
+  required: [...reviewSchema.required, 'coverage', 'requirements'],
+  properties: { ...reviewSchema.properties,
+    coverage: { type: 'array', items: coverageJson },
+    requirements: { type: 'array', items: requirementJson },
+  },
+};
+export function strictSchemaForIssues(refs: string[]) {
+  return { ...strictReviewSchema, properties: { ...strictReviewSchema.properties,
+    requirements: { type: 'array', ...(!refs.length ? { maxItems: 0 } : {}), items: { ...requirementJson,
+      properties: { ...requirementJson.properties, ref: refs.length ? enumOf(refs) : str },
+    } },
+  } };
+}
+export const StrictReviewOut = ReviewOut.extend({
+  coverage: z.array(z.object({
+    section_id: z.string(), status: z.enum(['examined', 'unverified']),
+    dependencies: z.array(z.string()), tests: z.array(z.string()), configuration: z.array(z.string()), notes: z.string(),
+  })),
+  requirements: z.array(z.object({ ref: z.string(), criterion: z.string(), status: z.enum(['implemented', 'missing', 'deferred', 'out_of_scope', 'externally_unverifiable', 'not_checked']), reason: z.string(), scope_evidence: z.string() })),
+});
+export type StrictReviewOut = z.infer<typeof StrictReviewOut>;
+
 export const VerifyOut = z.object({
   verdicts: z.array(
     z.object({

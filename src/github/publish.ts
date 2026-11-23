@@ -77,7 +77,8 @@ export async function postReview(
   return { id: review.id, url: review.html_url, state: review.state, commentIds, droppedInline };
 }
 
-function insertBeforeMarker(body: string, section: string): string {
+// Adds a section at the end of a review body, ahead of its hidden marker.
+export function insertBeforeMarker(body: string, section: string): string {
   const at = body.lastIndexOf(REVIEW_MARKER);
   return at < 0 ? `${body}\n\n${section}` : `${body.slice(0, at)}${section}\n\n${body.slice(at)}`;
 }

@@ -24,13 +24,22 @@ export class SettingsStore {
   private deny: Matcher = never;
   private excluded: Matcher = never;
 
-  constructor(db: Db) {
+  constructor(db: Db, snapshot?: Settings) {
     this.db = db;
     this.data = SettingsStore.defaults();
-    const raw = db.getKv(KEY);
+    const raw = snapshot ? JSON.stringify(snapshot) : db.getKv(KEY);
     if (raw) {
-      const parsed = SettingsSchema.safeParse(JSON.parse(raw));
-      if (parsed.success) this.data = parsed.data;
+      const input = JSON.parse(raw);
+      const upgrade = !snapshot && input.strict && input.strict.maxContinuations === undefined;
+      if (upgrade) {
+        if (input.strict.maxBatches === 8) input.strict.maxBatches = 16;
+        if (input.strict.maxRuns === 32) input.strict.maxRuns = 64;
+      }
+      const parsed = SettingsSchema.safeParse(input);
+      if (parsed.success) {
+        this.data = parsed.data;
+        if (upgrade) db.setKv(KEY, JSON.stringify(this.data));
+      }
       else console.error('[settings] stored settings are invalid; using defaults until they are saved again', parsed.error.issues);
     }
     this.compile();
@@ -42,6 +51,10 @@ export class SettingsStore {
 
   get all(): Settings {
     return structuredClone(this.data);
+  }
+
+  snapshot(data = this.all): SettingsStore {
+    return new SettingsStore(this.db, data);
   }
 
   get stored(): boolean {
@@ -94,6 +107,8 @@ export class SettingsStore {
   // ---- sections, read live
 
   get repos() { return this.data.repos; }
+  get reviewProfile() { return this.data.reviewProfile; }
+  get strict() { return this.data.strict; }
   get dryRun() { return this.data.dryRun; }
   get defaultMode() { return this.data.defaultMode; }
   get skipAuthors() { return this.data.skipAuthors; }

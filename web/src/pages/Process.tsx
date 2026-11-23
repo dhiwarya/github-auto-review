@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { PASS_OF, reviewsOf, type Evidence, type EvidenceFile, type Finding, type Job, type JobDetail, type Run, type Step, type StepKind } from '../../../src/types.ts';
+import { PASS_OF, reviewsOf, type Evidence, type EvidenceFile, type Finding, type Job, type JobDetail, type Run, type Step, type StepKind, type StrictReport } from '../../../src/types.ts';
 import { getJson } from '../api.ts';
 import { compact, duration, shortSha } from '../ui.tsx';
 
@@ -469,6 +469,9 @@ export function ProcessView({ detail }: { detail: JobDetail }) {
   const evidenceState: StageState = evidence ? 'done' : active ? (job.state === 'running' ? 'running' : 'pending') : 'skipped';
   const posting = postingState(job);
   let n = 1;
+  let strict: StrictReport | null = null;
+  try { strict = JSON.parse(job.review_report ?? 'null'); } catch { /* old job */ }
+  const strictPurposes = [...new Set([...runs.map((r) => r.purpose), ...steps.map((s) => s.purpose)].filter((p) => p.startsWith('strict:')))];
 
   return (
     <ol className="process">
@@ -480,10 +483,29 @@ export function ProcessView({ detail }: { detail: JobDetail }) {
         )}
       </Stage>
 
-      {job.kind === 'recheck' ? (
+      {strict && <Stage n={n++} title="Strict coverage and approval gates" state={strict.complete ? 'done' : active ? 'running' : 'failed'}>
+        <p className="small">{strict.complete ? 'Required coverage and stages completed.' : 'Review incomplete; automatic posting is withheld.'} {strict.sections.length} assigned code/context sections; {strict.excluded.length} excluded files. {strict.inheritedFrom ? `Baseline: job ${strict.inheritedFrom}.` : ''}</p>
+        {strict.recovery && <p className="small">{strict.recovery}</p>}
+        {strict.workload && <p className="small muted">Planned: {strict.workload.plannedDiscoveryRuns} discovery runs + {strict.workload.synthesisRuns} synthesis · {strict.workload.verificationReserve} verification attempts reserved · {strict.workload.maxRuns} total attempt limit</p>}
+        {!!strict.sources?.length && <details className="small"><summary>Complete context sources ({strict.sources.length})</summary>{strict.sources.map((s) => <p key={s.id}><strong>{s.title}</strong> · {s.chars.toLocaleString()} characters · {s.sections} tracked sections · <code>{s.digest.slice(0, 16)}</code></p>)}</details>}
+        <p className="small muted">Diff inclusion, model-reported examination, and recorded tool activity are separate evidence. They do not prove understanding.</p>
+        {[...new Set([...strict.gaps, ...strict.approvalBlocks])].length > 0 && <ul className="plain-list small">{[...new Set([...strict.gaps, ...strict.approvalBlocks])].map((g) => <li key={g}>{g}</li>)}</ul>}
+        {(strict.requirements?.length ?? 0) > 0 && <details className="small"><summary>Requirement assessments</summary>{strict.requirements!.map((r, i) => <div key={i}><p><strong>{r.ref}: {r.status}</strong> ({r.stage}) — {r.criterion ? `${r.criterion}: ` : ''}{r.reason}</p>{r.scopeEvidence && <blockquote>{r.scopeEvidence}</blockquote>}</div>)}</details>}
+        {strict.stages.map((s) => <details key={s.key} className="small"><summary>{s.purpose}: {s.state} · {s.provider ?? 'no provider completed'}{s.model ? ` ${s.model}` : ''}{s.continuations ? ` · ${s.continuations} continuation(s)` : ''}</summary>
+          {s.error && <p className="error">{s.error}</p>}
+          {s.coverage.map((c) => <div key={c.section_id}><strong>{c.section_id}: {c.status}</strong><p>{c.notes}</p><p className="muted">Dependencies: {c.dependencies.join(', ') || 'none reported'} · Tests: {c.tests.join(', ') || 'none reported'} · Configuration: {c.configuration.join(', ') || 'none reported'}</p></div>)}
+        </details>)}
+      </Stage>}
+
+      {job.kind === 'recheck' && !strict ? (
         <Stage n={n++} title="Re-check of open findings" state={passState(attempts('recheck'), active)}>
           <PassCard title="Re-check" attempts={attempts('recheck')} jobActive={active} emptyNote="No findings were open, so no model ran." />
         </Stage>
+      ) : strict ? (
+        <>
+          {strictPurposes.map((p) => <Stage key={p} n={n++} title={p.split(':').slice(1, -1).join(' / ')} state={passState(attempts(p), active)}><PassCard title="Model activity and usage" attempts={attempts(p)} jobActive={active} emptyNote="Waiting for this stage." /></Stage>)}
+          <Stage n={n++} title="Checking findings against the code" state={findings.length || job.state === 'done' ? 'done' : 'pending'}><ValidationBody findings={findings} /></Stage>
+        </>
       ) : (
         <>
           <Stage

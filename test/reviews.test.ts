@@ -10,6 +10,7 @@ import type { GitHub } from '../src/github/client.ts';
 import { isOwnComment } from '../src/github/publish.ts';
 import type { Router, RouterTask } from '../src/llm/router.ts';
 import { ReviewPipeline } from '../src/review/pipeline.ts';
+import { consistencyInstructions, mainInstructions, strictInstructions } from '../src/review/prompts.ts';
 import { relatedAlerts, type RelatedCandidate } from '../src/review/related.ts';
 import { SettingsStore } from '../src/settings.ts';
 import type { Evidence, RelatedPr } from '../src/types.ts';
@@ -207,6 +208,19 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     const j = db.updateJob(job(db, 'x').id, { reviews: null });
     await new ReviewPipeline(fakeGitHub(base, head), cfg, db, router, cache).run(j, new AbortController().signal);
     assert.deepEqual(runs.map((r) => r.purpose).sort(), ['main', 'security']);
+  });
+});
+
+describe('review instructions', () => {
+  it('give requirements to the consistency review, except in Strict, whose own passes keep them', () => {
+    assert.doesNotMatch(mainInstructions('me', 5), /Requirement alignment/);
+    assert.match(mainInstructions('me', 5, { requirements: true }), /Requirement alignment against the linked issues/);
+    assert.match(strictInstructions('main', 'me', 5), /Requirement alignment against the linked issues/);
+    assert.match(consistencyInstructions('me'), /The linked issues\. Report these with category "requirement"/);
+    const extras = consistencyInstructions('me', { requirements: false });
+    assert.doesNotMatch(extras, /Report these with category "requirement"/);
+    assert.match(extras, /category "docs"/);
+    assert.match(extras, /related_prs/);
   });
 });
 

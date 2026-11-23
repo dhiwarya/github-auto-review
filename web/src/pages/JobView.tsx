@@ -92,7 +92,7 @@ function Verdict({ job }: { job: Job }) {
   else if (job.review_state === 'CHANGES_REQUESTED') outcome = `Changes requested${job.approve_note ? `: ${job.approve_note}` : ''}`;
   else if (job.dry_run) outcome = null;
   else if (job.approve_note) outcome = `Not approved: ${job.approve_note}`;
-  else if (job.mode === 'draft' && job.review_state === 'PENDING') outcome = 'No blockers: you can approve it when you submit the draft';
+  else if (job.mode === 'draft' && job.review_state === 'PENDING') outcome = 'Approval checks passed: you can approve it when you submit the draft';
   return (
     <div className="small meta-line">
       <span>
@@ -110,6 +110,7 @@ function PostPanel({ job, onClose }: { job: Job; onClose: () => void }) {
   const [mode, setMode] = useState<ReviewMode>(job.mode);
   const [error, setError] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
+  const [allowPartial, setAllowPartial] = useState(false);
 
   useEffect(() => {
     getJson<PostPreview>(`/api/jobs/${job.id}/post`)
@@ -124,7 +125,7 @@ function PostPanel({ job, onClose }: { job: Job; onClose: () => void }) {
     setPosting(true);
     setError(null);
     try {
-      await sendJson('POST', `/api/jobs/${job.id}/post`, { mode });
+      await sendJson('POST', `/api/jobs/${job.id}/post`, { mode, allowPartial });
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -144,6 +145,7 @@ function PostPanel({ job, onClose }: { job: Job; onClose: () => void }) {
       {!preview && !error && <div className="small muted">Checking the PR…</div>}
       {preview && (
         <>
+          {preview.partial && <label className="small warn-text"><input type="checkbox" checked={allowPartial} onChange={(e) => setAllowPartial(e.target.checked)} /> I explicitly choose to post this incomplete review. Publishing will leave a comment and will not approve or request changes.</label>}
           <div className="post-modes" role="radiogroup" aria-label="How to post">
             <label className={`post-mode ${mode === 'draft' ? 'active' : ''}`}>
               <input type="radio" name="mode" checked={mode === 'draft'} onChange={() => setMode('draft')} />
@@ -190,7 +192,7 @@ function PostPanel({ job, onClose }: { job: Job; onClose: () => void }) {
           Cancel
         </button>
         {preview && (
-          <button className="btn" onClick={post} disabled={posting}>
+          <button className="btn" onClick={post} disabled={posting || (preview.partial && !allowPartial)}>
             {posting ? 'Posting…' : mode === 'draft' ? 'Post draft' : requests ? 'Publish and request changes' : approves ? 'Publish and approve' : 'Publish review'}
           </button>
         )}
@@ -321,7 +323,8 @@ export function JobView({ id }: { id: number }) {
         {job.state === 'skipped' && <div className="small muted">{job.skip_reason}</div>}
 
         <div className="actions">
-          {job.dry_run === 1 && job.state === 'done' && job.review_state === 'DRY_RUN' && !showPost && (
+          {!active && <button className="btn btn-ghost" onClick={() => postJson<{ id: number }>(`/api/jobs/${id}/full-review`).then((j) => { window.location.hash = `#/jobs/${j.id}`; }).catch((e) => setRecheckError(String(e.message ?? e)))} title="Review the entire current PR using the current profile and fresh budgets">Full PR review</button>}
+          {!job.review_id && !active && job.review_body && ((job.dry_run === 1 && job.state === 'done' && job.review_state === 'DRY_RUN') || (job.review_report && ['failed', 'cancelled'].includes(job.state))) && !showPost && (
             <button className="btn" onClick={() => setShowPost(true)}>
               Post to GitHub…
             </button>

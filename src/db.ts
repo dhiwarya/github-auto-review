@@ -2,6 +2,7 @@ import path from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { bus } from './bus.ts';
 import type { Evidence, Finding, Job, JobEvent, JobState, Run, Severity, Step } from './types.ts';
+import type { ContextSnapshot } from './review/sources.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -131,6 +132,11 @@ CREATE TABLE IF NOT EXISTS evidence (
   json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS review_context (
+  job_id INTEGER PRIMARY KEY REFERENCES jobs (id),
+  json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -194,6 +200,8 @@ export class Db {
       ['runs', 'run_key', 'TEXT'],
       ['runs', 'prompt_chars', 'INTEGER'],
       ['runs', 'output', 'TEXT'],
+      ['jobs', 'review_policy', 'TEXT'],
+      ['jobs', 'review_report', 'TEXT'],
     ];
     for (const [table, column, type] of added) {
       const cols = this.all<{ name: string }>(`PRAGMA table_info(${table})`).map((c) => c.name);
@@ -334,6 +342,17 @@ export class Db {
 
   setEvidence(jobId: number, evidence: Evidence) {
     this.run('INSERT INTO evidence (job_id, json) VALUES (?, ?) ON CONFLICT (job_id) DO UPDATE SET json = excluded.json', jobId, JSON.stringify(evidence));
+  }
+
+  contextSnapshot(jobId: number): ContextSnapshot | null {
+    const row = this.get<{ json: string }>('SELECT json FROM review_context WHERE job_id = ?', jobId);
+    return row ? JSON.parse(row.json) as ContextSnapshot : null;
+  }
+
+  saveContextSnapshot(jobId: number, snapshot: ContextSnapshot) {
+    // Sources are frozen for this job so checkpoints cannot combine changing issue text.
+    const existing = this.contextSnapshot(jobId);
+    if (!existing || existing.gaps.length) this.run('INSERT INTO review_context (job_id, json) VALUES (?, ?) ON CONFLICT (job_id) DO UPDATE SET json = excluded.json', jobId, JSON.stringify(snapshot));
   }
 
   evidence(jobId: number): Evidence | null {

@@ -6,7 +6,7 @@ A personal review agent that runs on your own machine. When someone requests you
 
 You choose which reviews each PR gets, in Settings: a default set, exceptions per repo, and tick boxes when you add a PR by hand. Each review is its own model run, so fewer reviews use less of your subscription. All three are on by default.
 
-One provider does every review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page.
+The **Standard** profile uses one provider for the review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page. The **Strict** profile requires both providers, as described below.
 
 Security reviews can trip a provider's safety filter (OpenAI may flag one as "possible cybersecurity risk"). That run then goes to the next model in the same order, ending with Claude if the fallback is on. Nothing is paused, since the refusal is about that PR, not the model. The security instructions say plainly that this is a defensive review of the team's own code, and never ask for exploit code or payloads.
 
@@ -32,6 +32,41 @@ After that, plain code (no model) checks each finding:
 - Any credential in the output is redacted. If a credential appears that the PR itself didn't add, the finding is dropped as a possible exfiltration attempt.
 
 Severity scale: **blocker**, **major**, **minor**, **nit**.
+
+### Strict reviews
+
+Strict and the review choice work together: Strict always reviews code, security and the linked issues itself, whatever is ticked in **Settings → Reviews**. With **Consistency** on, one more run on the primary provider checks the docs and the other open PRs after the Strict stages; requirements stay with Strict's checklist.
+
+Select **Settings → Reviewer → Review profile → Strict**. Standard remains the default for existing and new installations. Selecting Strict does not change dry run, draft/publish mode, or the repository list. Both Codex and Claude CLI logins are required.
+
+Strict reviews run code/requirements and security passes on the primary provider, then a fresh adversarial pass on the other provider. The independent pass does not see the current review's other findings. Serious findings are verified in fresh runs on the provider opposite the one that raised them. Model fallback stays within the assigned provider; the Standard cross-provider fallback switch does not weaken this requirement.
+
+The reviewer creates a manifest of code and context sections. Strict retrieves complete PR descriptions, linked issues, paginated comments and base-branch guidelines; it does not use Standard's fixed-size excerpts. Complete source snapshots are saved per job, with hashes and exact character ranges for each assigned section. Local copies inside the throwaway checkout remain available for cross-batch lookup. Every required pass must account for each assigned section and report the dependencies, tests and configuration it examined. Claimed file paths must exist inside the checkout. Large changes are split into bounded batches, followed by primary and independent consolidation checking interactions and finishing the requirement checklist. The independent consolidation sees only its own earlier assessments. Real minor findings are still included; the Standard large-PR top-risk restriction does not apply. Strict evidence must match a complete quoted block, allowing indentation differences. Requirement findings can instead quote actual linked-issue evidence.
+
+The job page distinguishes source material included in a prompt, the model's reported examination, and its recorded tool activity. Coverage reports are evidence of the review process, not proof that a model understood the code. Exclusions stay visible. Missing sections, unavailable sources, exhausted budgets, or failed stages make the review incomplete. The app attempts targeted continuations, then retains an unfinished result locally instead of automatically publishing it. Recoverable provider outages wait; exhausted recovery requires action on the dashboard. A failed/cancelled incomplete result can be posted manually only after explicitly selecting the partial-review checkbox; a partial publish is a comment and never approves or requests changes.
+
+Requirement assessments use the parent issue refs from the retrieved manifest. Citations to retrieved issue comments are normalized to their parent before checking completion and reviewer agreement. Unknown issues or nonexistent comment ordinals are rejected. Continuations receive the exact missing/unfinished criteria and valid refs, and retain completed code coverage without asking the model to repeat it. A completed assessment can still block approval when promised behavior is missing or acceptance remains externally unverified.
+
+| Strict budget | Default |
+| --- | --- |
+| Time per model run | 1,800 seconds |
+| Characters per run, including context and an instruction allowance | 500,000 |
+| Review batches | 16 |
+| Model attempts per job, including continuations, verification and model fallbacks | 64 |
+| Continuations per stage | 2 |
+| Attempts reserved for verification | 8 (when the planned workload leaves room) |
+| Claude turns per run | 120 |
+| Claude effort | High |
+
+Successful, schema-valid stages are saved under their exact input fingerprint. After an unavailable provider recovers, only missing stages run again. A stage with missing coverage continues with the unexamined sections and merges the results. The app estimates discovery/consolidation work before running and reserves attempts for later stages and verification. Other stage failures use bounded job retries. Exhausted budgets require a new full review with suitable settings. Repeated calls count against the total job attempt budget, including calls from earlier attempts. Stored settings with the previous default 8 batches/32 attempts are upgraded once to 16/64; other custom values are preserved.
+
+Requirements are assessed as a checklist. An issue the PR closes represents its promised full scope. Merely mentioning an issue does not promise completion of its entire roadmap: deferred or unrelated criteria need source-backed scope evidence, corroboration against the code, and independent reviewer agreement. Missing promised behavior still blocks approval. Operational/manual acceptance that cannot be established from code is recorded as externally unverifiable and blocks approval without making completed code coverage unfinished.
+
+Strict approval always requires high confidence, complete required stages and coverage, no open blocker or major from any review, no unresolved serious verification, no material requirement gaps, and no unresolved review questions. The existing commit, draft-PR, self-approval, manual-change-request and credential checks still apply. The preview and actual post use the same decision. A failed verifier never silently qualifies a Strict review for approval. Uncertain serious concerns retain their severity and appear as clearly marked summary items for human inspection.
+
+Each started job stores its review profile, policy version and effective settings. Retries retain that policy and successful source snapshot. An incomplete source fetch is retried rather than frozen permanently. Unposted jobs from the previous Strict policy are explicitly upgraded, retaining their old policy in the saved record and rebuilding full coverage before posting. More restrictive current approval settings also apply at posting; changing to Standard cannot remove a started Strict job's gates. Draft submission remains your decision. Strict adds no new automatic request-changes behavior to initial reviews.
+
+Incremental reviews require complete current-policy Strict coverage at their baseline. Baseline confidence is separate: a complete earlier review containing a major finding is still a valid coverage baseline, and the open finding is checked independently. Missing, older-policy or incomplete baselines automatically expand the job into one full review of the current PR. Strict rechecks refresh full code/context coverage and the PR discussion while reassessing earlier findings; they do not raise new findings on an unchanged commit. **Full PR review** remains available for a fresh review with current settings and budgets. If you already have a pending GitHub review, submit or discard it before another can be posted.
 
 ## Lifecycle
 
@@ -201,7 +236,7 @@ The keep rate is learned automatically. After you submit a draft, the app checks
 
 ## Settings
 
-Everything is set on the dashboard's **Settings** page and stored in the app's database (`data/reviewer.sqlite`). A save is checked as a whole and applies straight away, with no restart. Defaults:
+Everything is set on the dashboard's **Settings** page and stored in the app's database (`data/reviewer.sqlite`). A save is checked as a whole and applies without a restart. Review policies are captured when a job starts; model and review-budget changes apply to new jobs, while stricter approval restrictions also apply before posting. Defaults:
 
 | Section | Setting | Default |
 | --- | --- | --- |
@@ -213,6 +248,7 @@ Everything is set on the dashboard's **Settings** page and stored in the app's d
 | Consistency review | Another open PR is unmaintained after | 30 days without activity |
 | | Where the docs are | Not set: the reviewer looks in the repo itself |
 | Reviewer | Who reviews | Codex |
+| | Review profile | Standard; select Strict for independent review and required coverage |
 | | If Codex runs out, use Claude instead | On |
 | | Double-check blockers and majors | On |
 | | Codex models | `gpt-6.1-sol`, then `gpt-6-sol` |
@@ -258,10 +294,15 @@ That saves GitHub requests and gives the reviewer history to work with. The copi
 | --- | --- |
 | `npm run dev` | API with auto-reload on port 4477 |
 | `npm run dev:web` | Dashboard with hot reload on port 5173 (proxies to the API) |
-| `npm test` | Unit tests for diff parsing and finding validation |
+| `npm test` | Tests for validation, review workflows, approval gates, routing, persistence and Strict coverage |
 | `npm run typecheck` | Type-check the API and the dashboard |
+| `npm run eval:strict -- results.json` | Compare human-adjudicated fixture reviews by profile |
 
 The server runs TypeScript directly through Node's type stripping, so it has no build step. Only the dashboard is built, with Vite. State lives in `data/reviewer.sqlite`, using Node's built-in SQLite.
+
+For environments that restrict the test runner's child processes, use `node --test --test-isolation=none test/*.test.ts`. The POSIX git-remote and shell-stand-in suites remain explicitly skipped on Windows.
+
+Quality evaluation fixtures live in `test/fixtures/strict-reviews.json`. Run both profiles against the same fixtures, then have a human match each finding to an expected defect (or label it a false positive). Supply a JSON object with a `reviews` array. Each row has `caseId`, `profile` (`standard` or `strict`), `complete`, `durationMs`, nullable `inputTokens`/`outputTokens`, and `findings: [{ "matchedExpectedId": "expected-defect-id-or-null" }]` (use JSON `null` for a false positive). The evaluation command reports precision, recall, duplicates, incomplete runs, missing cases, runtime and token usage. These small synthetic fixtures support repeatable comparisons; mock-provider workflow tests do not establish real-model detection quality.
 
 ## Known limits
 

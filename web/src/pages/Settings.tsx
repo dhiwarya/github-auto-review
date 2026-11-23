@@ -278,7 +278,7 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
           hint={
             draft.defaultMode === 'draft'
               ? 'A pending review only you can see. You edit it and submit it yourself.'
-              : 'Posted straight away under your name. Approves the PR when the rules below allow it; never requests changes.'
+              : 'Posted straight away under your name. Approves when the rules allow it; rechecks request changes while blockers or majors remain.'
           }
         >
           <Segmented
@@ -297,7 +297,8 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
           label={<strong>Approve PRs that have no blockers</strong>}
           hint="Only published reviews approve. Never a draft (you decide when you submit it), a draft PR, your own PR, a PR with commits newer than the review, or one where you requested changes. An approval counts toward branch protection, so the PR may become mergeable."
         />
-        {draft.approval.enabled && (
+        {draft.approval.enabled && draft.reviewProfile === 'strict' && <p className="small muted">Strict approval requires high confidence, all required coverage and stages completed, and no open blockers or majors. The Standard minimum-confidence setting does not relax these rules.</p>}
+        {draft.approval.enabled && draft.reviewProfile === 'standard' && (
           <Field
             label="Approve when confidence is at least"
             hint={
@@ -360,7 +361,11 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
           />
         </div>
         {errorFor('reviews') && <div className="small error">{errorFor('reviews')}</div>}
-        <div className="small muted">A PR is approved for you only when the code and security reviews both ran. Without the consistency review, confidence is medium at most.</div>
+        <div className="small muted">
+          {draft.reviewProfile === 'strict'
+            ? 'In the Strict profile, code, security and the linked issue are always reviewed, whatever is ticked here. Consistency adds the docs and other open PRs.'
+            : 'A PR is approved for you only when the code and security reviews both ran. Without the consistency review, confidence is medium at most.'}
+        </div>
         <Field label="Exceptions per repo" hint="The first matching pattern wins." error={errorFor('repoReviews')}>
           <div className="rows">
             {draft.repoReviews.map((o, i) => (
@@ -445,7 +450,10 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
         </Field>
       </Section>
 
-      <Section title="Reviewer" description="One provider does every review and the double-check.">
+      <Section title="Reviewer" description={draft.reviewProfile === 'strict' ? 'Strict uses the primary provider for code and security, the other provider for an independent adversarial pass, and independent verification of serious findings. Both CLI logins are required.' : 'The primary provider reviews code and security, with optional fallback and double-checking.'}>
+        <Field label="Review profile" hint="Strict requires complete coverage, independent review, and high confidence before automatic approval. Existing reviews retain their recorded policy.">
+          <Segmented label="Review profile" value={draft.reviewProfile} onChange={(v) => edit((d) => void (d.reviewProfile = v))} options={[["standard", "Standard"], ["strict", "Strict"]]} />
+        </Field>
         <Field label="Who reviews">
           <Segmented
             label="Review provider"
@@ -463,16 +471,17 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
           label={`If ${NAME[m.provider]} runs out, use ${NAME[backup]} instead`}
           hint={`When every ${NAME[m.provider]} model hits its usage limit or you're signed out. Off: reviews wait until ${NAME[m.provider]} is available again.`}
         />
-        <Toggle
+        {draft.reviewProfile === 'standard' && <Toggle
           checked={m.doubleCheck}
           onChange={(v) => edit((d) => void (d.models.doubleCheck = v))}
           label="Double-check blockers and majors before posting"
-          hint="A second, separate run re-reads the code for each serious finding and drops the ones it can't confirm."
-        />
+          hint="A fresh run re-reads serious findings. Refuted findings are dropped; uncertain ones are downgraded. If verification fails, Standard can post unverified findings."
+        />}
+        {draft.reviewProfile === 'strict' && <p className="small muted">Strict always verifies blockers and majors. Missing verification blocks approval; uncertain concerns retain their severity and are clearly marked in the summary. Provider fallback settings below apply to Standard reviews.</p>}
         <div className="grid two">
           {([m.provider, backup] as Provider[]).map((p, i) => (
             <div key={p} className="model-card">
-              <Field label={`${NAME[p]} models${i === 0 ? '' : m.fallbackToOther ? ' (backup)' : ' (not used)'}`} error={errorFor(`models.${p}`)}>
+              <Field label={`${NAME[p]} models${i === 0 ? '' : draft.reviewProfile === 'strict' ? ' (independent review)' : m.fallbackToOther ? ' (backup)' : ' (not used)'}`} error={errorFor(`models.${p}`)}>
                 <input
                   value={draft.models[p].model ?? ''}
                   placeholder="CLI default"
@@ -481,7 +490,7 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
                 <div className="small muted">First choice. Then, in order:</div>
                 <ListInput value={draft.models[p].fallbackModels} onChange={(v) => edit((d) => void (d.models[p].fallbackModels = v))} rows={2} />
               </Field>
-              {byProvider.get(p) && <ModelStatus p={byProvider.get(p)!} role={i === 0 ? 'reviews' : m.fallbackToOther ? 'backup' : 'not used'} />}
+              {byProvider.get(p) && <ModelStatus p={byProvider.get(p)!} role={i === 0 ? 'reviews' : draft.reviewProfile === 'strict' ? 'independent review' : m.fallbackToOther ? 'backup' : 'not used'} />}
             </div>
           ))}
         </div>
@@ -496,6 +505,19 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
           </select>
         </Field>
       </Section>
+
+      {draft.reviewProfile === 'strict' && <Section title="Strict review budgets" description="Large PRs are split into batches, then checked for interactions. Exhausted budgets leave explicit coverage gaps and prevent approval. Successful stages are reused on retry.">
+        <div className="grid two">
+          <Field label="Time limit per Strict run" error={errorFor('strict.passTimeoutSec')}><NumberInput value={draft.strict.passTimeoutSec} min={60} max={3600} suffix="seconds" onChange={(v) => edit((d) => void (d.strict.passTimeoutSec = v))} /></Field>
+          <Field label="Characters per Strict run" error={errorFor('strict.maxDiffChars')}><NumberInput value={draft.strict.maxDiffChars} min={10000} max={1000000} onChange={(v) => edit((d) => void (d.strict.maxDiffChars = v))} /></Field>
+          <Field label="Maximum review batches" error={errorFor('strict.maxBatches')}><NumberInput value={draft.strict.maxBatches} min={1} max={40} onChange={(v) => edit((d) => void (d.strict.maxBatches = v))} /></Field>
+          <Field label="Maximum model attempts per job" hint="Includes fallback model attempts and verification." error={errorFor('strict.maxRuns')}><NumberInput value={draft.strict.maxRuns} min={3} max={200} onChange={(v) => edit((d) => void (d.strict.maxRuns = v))} /></Field>
+          <Field label="Continuations per stage" hint="Complete missing source/code sections without repeating completed coverage." error={errorFor('strict.maxContinuations')}><NumberInput value={draft.strict.maxContinuations} min={0} max={4} onChange={(v) => edit((d) => void (d.strict.maxContinuations = v))} /></Field>
+          <Field label="Attempts reserved for verification" error={errorFor('strict.verificationReserve')}><NumberInput value={draft.strict.verificationReserve} min={1} max={40} onChange={(v) => edit((d) => void (d.strict.verificationReserve = v))} /></Field>
+          <Field label="Claude turns per Strict run" error={errorFor('strict.claudeMaxTurns')}><NumberInput value={draft.strict.claudeMaxTurns} min={5} max={200} onChange={(v) => edit((d) => void (d.strict.claudeMaxTurns = v))} /></Field>
+          <Field label="Claude effort in Strict"><select value={draft.strict.claudeEffort} onChange={(e) => edit((d) => void (d.strict.claudeEffort = e.target.value as Settings['strict']['claudeEffort']))}>{['low', 'medium', 'high', 'xhigh', 'max'].map((e) => <option key={e} value={e}>{e}</option>)}</select></Field>
+        </div>
+      </Section>}
 
       <Section title="Schedule">
         <div className="grid two">
@@ -532,7 +554,7 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
         )}
       </Section>
 
-      <Section title="Review limits">
+      <Section title="Review limits" description={draft.reviewProfile === 'strict' ? 'Strict uses its own run budgets above and reviews real minor findings on large PRs. The nit cap and retry limit below still apply.' : undefined}>
         <div className="grid two">
           <Field label="Large PR above" hint="Then only blockers and majors are reported." error={errorFor('limits.largePrLines')}>
             <NumberInput value={draft.limits.largePrLines} min={100} suffix="changed lines" onChange={(v) => edit((d) => void (d.limits.largePrLines = v))} />
