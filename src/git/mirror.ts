@@ -178,6 +178,15 @@ export class RepoCache {
     };
   }
 
+  // Every file at a commit, with git's own hash of its content and its size.
+  async listTree(repo: string, sha: string): Promise<{ path: string; hash: string; size: number }[]> {
+    const out = await this.git(repo, ['ls-tree', '-r', '-l', '-z', sha]);
+    return out.split('\0').flatMap((entry) => {
+      const m = /^\d+ blob ([0-9a-f]+)\s+(\d+)\t(.+)$/s.exec(entry);
+      return m ? [{ path: m[3], hash: m[1], size: Number(m[2]) }] : [];
+    });
+  }
+
   async hasCommit(repo: string, sha: string): Promise<boolean> {
     try {
       await this.git(repo, ['cat-file', '-e', `${sha}^{commit}`]);

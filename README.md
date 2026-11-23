@@ -18,6 +18,29 @@ Security reviews can trip a provider's safety filter (OpenAI may flag one as "po
 
 Then every blocker and major is double-checked in a second, separate run. Refuted findings are dropped, and uncertain ones are downgraded.
 
+### Repo context
+
+A repo can have **context**: markdown that explains how the system is meant to work, such as architecture, design documents, domain rules and conventions. You set it up in **Settings → Repo context**, per repo, from:
+
+- **Context repositories**, such as a separate docs repo, optionally one folder of it.
+- **Uploaded markdown**: a folder or files dropped onto the dashboard (`.md`, `.mdx`, `.markdown`, `.txt`; up to 20 MB at a time).
+- **Notes** in your own words, given to every reviewer as written.
+
+The markdown is read once into a graph in the app's database, the **baseline**. Every document and every heading section is a node. A section belongs to its parent, and a link in one section is an edge to the document or section it points at. Hidden folders (`.github`, `.kiro` and the like) and `node_modules` are left out.
+
+Baselining parses files and runs no model, so it costs no subscription usage. A repo with a few megabytes of markdown takes seconds. It refreshes itself: before each review the context repositories are fetched, and only files that changed are read again. **Refresh baseline** in Settings does the same on demand.
+
+Before a review's models run, the app looks the change up in the baseline:
+
+1. It takes the words that describe the change: the PR title, linked issue titles, changed file names, and the names the diff adds most.
+2. A keyword search (SQLite full-text search) finds the best-matching sections.
+3. It follows the graph one step from each match, to the sections they link to or are linked from.
+4. The result goes into the prompt of every review, with a list of the most-referenced documents, within a character budget (12,000 by default).
+
+The context is reference material. It can't instruct the reviewer, and it is fenced like every other text the app didn't write. The review's page lists the sections it was given and the words that were looked up. **Try a search** in Settings shows what any wording would return.
+
+Keyword search matches the words used, not their meaning: a PR and a document that describe the same thing in different terms may not meet. Context repositories are also checked out for the consistency review, which reports docs the PR makes stale.
+
 ### The consistency review
 
 - **Docs.** Settings says where each repo's docs are: folders or files in the repo, a separate docs repository, and any notes for the reviewer. A separate docs repo is checked out read-only next to the PR for the review. Without an entry, the reviewer looks for docs in the repo itself.
@@ -244,6 +267,7 @@ Everything is set on the dashboard's **Settings** page and stored in the app's d
 | Posting to GitHub | Dry run | On |
 | | How reviews are posted | Draft, with optional exceptions per repo |
 | | Approve PRs that have no blockers | On, when confidence is at least high |
+| Repo context | Context repositories, uploads and notes per repo | None |
 | Reviews | Code / Security / Consistency | All on, with optional exceptions per repo |
 | Consistency review | Another open PR is unmaintained after | 30 days without activity |
 | | Where the docs are | Not set: the reviewer looks in the repo itself |

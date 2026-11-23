@@ -3,10 +3,19 @@ import type { Settings, SettingsIssue } from '../../../src/settings-schema.ts';
 import type { Overview, Provider, ProviderStatus } from '../../../src/types.ts';
 import { ApiError, getJson, postJson, sendJson } from '../api.ts';
 import { clockTime, timeAgo } from '../ui.tsx';
+import { ContextBaseline } from './RepoContext.tsx';
 
 const NAME: Record<Provider, string> = { codex: 'Codex', claude: 'Claude' };
 const other = (p: Provider): Provider => (p === 'codex' ? 'claude' : 'codex');
 const lines = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean);
+const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+// "owner/repo" or "owner/repo:folder", one per line. A pasted GitHub link is a repo.
+const toSource = (line: string) => {
+  if (/^https?:\/\//i.test(line)) return { repo: line, path: '' };
+  const at = line.indexOf(':');
+  return at < 0 ? { repo: line, path: '' } : { repo: line.slice(0, at).trim(), path: line.slice(at + 1).trim() };
+};
+const fromSource = (s: { repo: string; path: string }) => (s.path ? `${s.repo}:${s.path}` : s.repo);
 
 // ---- small form controls
 
@@ -450,6 +459,44 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
         </Field>
       </Section>
 
+      <Section
+        title="Repo context"
+        description="Markdown that explains how each repo is meant to work. It is read into a searchable graph once (the baseline) and every review looks its change up there. Baselining uses no model, and refreshes itself when a context repository changes."
+      >
+        <Field label="Context per repo" hint="The first matching pattern wins. Context repositories are also where the consistency review looks for docs the PR makes stale." error={errorFor('context')}>
+          <div className="rows">
+            {draft.context.map((o, i) => {
+              const savedEntry = saved.context.find((c) => c.id === o.id);
+              const unchanged = savedEntry && JSON.stringify(savedEntry) === JSON.stringify(o);
+              return (
+                <div key={o.id} className="doc-card">
+                  <div className="small muted">For this repo</div>
+                  <div className="row">
+                    <input value={o.repo} placeholder="your-org/repo or your-org/*" aria-label="Repo this context is for" onChange={(e) => edit((d) => void (d.context[i].repo = e.target.value))} />
+                    <button type="button" className="btn btn-ghost btn-small" onClick={() => edit((d) => void d.context.splice(i, 1))}>
+                      Remove
+                    </button>
+                  </div>
+                  <div className="small muted">Context repositories, one per line. Add :folder to use only part of one.</div>
+                  <ListInput
+                    value={o.sources.map(fromSource)}
+                    onChange={(v) => edit((d) => void (d.context[i].sources = v.map(toSource)))}
+                    rows={2}
+                    placeholder={'your-org/docs\nyour-org/handbook:architecture'}
+                  />
+                  <div className="small muted">Anything every reviewer of this repo should know</div>
+                  <textarea rows={2} value={o.notes} placeholder="For example: amounts are stored in cents; the API is versioned by URL" aria-label="Notes for every reviewer" onChange={(e) => edit((d) => void (d.context[i].notes = e.target.value))} />
+                  {unchanged ? <ContextBaseline id={o.id} /> : <div className="small muted">Save your changes to build the baseline or upload markdown.</div>}
+                </div>
+              );
+            })}
+            <button type="button" className="btn btn-ghost btn-small add-row" onClick={() => edit((d) => void d.context.push({ id: newId(), repo: '', sources: [], notes: '' }))}>
+              Add repo context
+            </button>
+          </div>
+        </Field>
+      </Section>
+
       <Section title="Reviewer" description={draft.reviewProfile === 'strict' ? 'Strict uses the primary provider for code and security, the other provider for an independent adversarial pass, and independent verification of serious findings. Both CLI logins are required.' : 'The primary provider reviews code and security, with optional fallback and double-checking.'}>
         <Field label="Review profile" hint="Strict requires complete coverage, independent review, and high confidence before automatic approval. Existing reviews retain their recorded policy.">
           <Segmented label="Review profile" value={draft.reviewProfile} onChange={(v) => edit((d) => void (d.reviewProfile = v))} options={[["standard", "Standard"], ["strict", "Strict"]]} />
@@ -558,6 +605,9 @@ export function SettingsPage({ overview }: { overview: Overview | null }) {
         <div className="grid two">
           <Field label="Large PR above" hint="Then only blockers and majors are reported." error={errorFor('limits.largePrLines')}>
             <NumberInput value={draft.limits.largePrLines} min={100} suffix="changed lines" onChange={(v) => edit((d) => void (d.limits.largePrLines = v))} />
+          </Field>
+          <Field label="Project context per review" hint="How much of a repo's context baseline a review may be given." error={errorFor('limits.contextChars')}>
+            <NumberInput value={draft.limits.contextChars} min={1000} max={60000} suffix="characters" onChange={(v) => edit((d) => void (d.limits.contextChars = v))} />
           </Field>
           <Field label="Most nits per review" error={errorFor('limits.maxNits')}>
             <NumberInput value={draft.limits.maxNits} min={0} max={20} onChange={(v) => edit((d) => void (d.limits.maxNits = v))} />

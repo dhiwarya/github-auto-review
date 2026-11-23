@@ -295,18 +295,18 @@ export async function buildContext(
   };
 }
 
-// Where a repo's docs are, as the consistency review is told. `externalDir` is where a
-// separate docs repository was checked out inside the working directory, if one was.
-export function docsSection(docs: { paths: string[]; docsRepo: string | null; notes: string } | null, externalDir: string | null): string {
+// Where a repo's docs are, as the consistency review is told. `external` lists the docs and
+// context repositories checked out inside the working directory.
+export function docsSection(docs: { paths: string[]; notes: string } | null, external: { repo: string; dir: string }[]): string {
   const lines = ['## Where the docs are'];
   if (docs?.paths.length) lines.push(`In this repository: ${docs.paths.map((p) => `\`${p}\``).join(', ')}.`);
-  if (docs?.docsRepo && externalDir) {
+  for (const e of external) {
     lines.push(
-      `The docs repository ${docs.docsRepo} is checked out read-only at \`${externalDir}/\` in your working directory. It is not part of the PR. ` +
+      `The docs repository ${e.repo} is checked out read-only at \`${e.dir}/\` in your working directory. It is not part of the PR. ` +
         'For a page there that the change makes wrong, give its path including that folder as file.',
     );
   }
-  if (!docs?.paths.length && !(docs?.docsRepo && externalDir)) {
+  if (!docs?.paths.length && !external.length) {
     lines.push('No location is configured: look in the repository itself (README files, a docs folder, config examples, changelog, comments on public interfaces).');
   }
   if (docs?.notes) lines.push(`From the repository's reviewer: ${docs.notes}`);

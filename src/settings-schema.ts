@@ -82,6 +82,28 @@ export const SettingsSchema = z.object({
         .default([]),
     })
     .prefault({}),
+  // Markdown that describes each repo, kept as a searchable graph ("baseline") and looked up
+  // for every review. It comes from context repositories and from files you upload.
+  context: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-z0-9]{6,20}$/),
+        // The repos under review that it applies to; the first matching entry wins.
+        repo: repoPattern,
+        // Repositories whose markdown is the context, optionally one folder of each.
+        sources: z.array(z.object({ repo: repoName, path: z.string().trim().max(200).default('') })).default([]),
+        // Anything else every reviewer of these repos should know, in your words.
+        notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
+      }),
+    )
+    .superRefine((entries, ctx) => {
+      const seen = new Set<string>();
+      for (const [i, e] of entries.entries()) {
+        if (seen.has(e.id)) ctx.addIssue({ code: 'custom', path: [i, 'id'], message: 'Two entries share an id' });
+        seen.add(e.id);
+      }
+    })
+    .default([]),
   skipAuthors: z.array(z.string().trim().min(1)).default(['dependabot[bot]', 'renovate[bot]', 'github-actions[bot]']),
   excludeGlobs: z
     .array(z.string().trim().min(1))
@@ -130,6 +152,8 @@ export const SettingsSchema = z.object({
       largePrLines: int(100, 100_000).default(1500),
       maxDiffChars: int(10_000, 1_000_000).default(200_000),
       maxNits: int(0, 20).default(5),
+      // How much of a repo's context a review may be given, in characters.
+      contextChars: int(1000, 60_000).default(12_000),
       passTimeoutSec: int(60, 3600).default(900),
       claudeMaxTurns: int(5, 200).default(60),
       maxAttempts: int(1, 10).default(3),

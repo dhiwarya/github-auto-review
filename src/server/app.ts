@@ -5,7 +5,10 @@ import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 import { bus } from '../bus.ts';
 import { SettingsStore } from '../settings.ts';
+import { queryTerms } from '../context/query.ts';
+import type { ContextStore } from '../context/store.ts';
 import type { Db } from '../db.ts';
+import type { RepoCache } from '../git/mirror.ts';
 import type { GitHub } from '../github/client.ts';
 import { getPr } from '../github/prs.ts';
 import type { Poller } from '../jobs/poller.ts';
@@ -28,7 +31,14 @@ interface Deps {
   worker: Worker;
   poller: Poller;
   pipeline: ReviewPipeline;
+  context: ContextStore;
+  cache: RepoCache;
 }
+
+// Uploaded context: markdown and plain text, up to 20 MB and 3,000 files at a time.
+const UPLOAD_BYTES = 20 * 1024 * 1024;
+const UPLOAD_FILES = 3000;
+const UPLOADABLE = /\.(md|mdx|markdown|txt)$/i;
 
 const WEB_DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
 
@@ -183,7 +193,51 @@ export async function startServer(deps: Deps) {
     const result = cfg.update(req.body);
     if (!result.ok) return reply.code(400).send({ error: 'Some settings need fixing', issues: result.issues });
     console.log('[settings] saved');
+    deps.context.prune(cfg.context.map((c) => c.id));
     return { settings: result.settings };
+  });
+
+  // Repo context: the markdown baseline each review looks things up in.
+  const contextEntry = (id: string) => cfg.context.find((c) => c.id === id);
+  const failed = (err: unknown) => ({ error: err instanceof Error ? err.message.split('\n')[0] : String(err) });
+
+  app.get('/api/context', async () => ({ sets: cfg.context.map((c) => ({ id: c.id, status: deps.context.status(c.id) })) }));
+
+  // Builds the baseline now: fetches the context repositories and re-reads what changed.
+  app.post<{ Params: { id: string } }>('/api/context/:id/baseline', async (req, reply) => {
+    const entry = contextEntry(req.params.id);
+    if (!entry) return reply.code(404).send({ error: 'Save your settings first, then build the baseline' });
+    try {
+      return { status: await deps.context.refresh(entry, deps.cache, { force: true }) };
+    } catch (err) {
+      return reply.code(500).send(failed(err));
+    }
+  });
+
+  app.post<{ Params: { id: string }; Body: { files?: unknown; replace?: unknown } }>('/api/context/:id/upload', { bodyLimit: UPLOAD_BYTES + 4 * 1024 * 1024 }, async (req, reply) => {
+    if (!contextEntry(req.params.id)) return reply.code(404).send({ error: 'Save your settings first, then upload' });
+    const raw = Array.isArray(req.body?.files) ? req.body.files : [];
+    const files = raw.filter((f): f is { path: string; text: string } => typeof f?.path === 'string' && typeof f?.text === 'string' && UPLOADABLE.test(f.path) && !f.path.split(/[\\/]/).includes('..'));
+    if (!files.length) return reply.code(400).send({ error: 'No markdown or text files in that upload (.md, .mdx, .markdown, .txt)' });
+    if (files.length > UPLOAD_FILES) return reply.code(400).send({ error: `That is ${files.length} files; the most at once is ${UPLOAD_FILES}` });
+    if (files.reduce((n, f) => n + f.text.length, 0) > UPLOAD_BYTES) return reply.code(400).send({ error: 'That upload is over 20 MB' });
+    try {
+      return { status: await deps.context.upload(req.params.id, files, req.body?.replace === true), skipped: raw.length - files.length };
+    } catch (err) {
+      return reply.code(500).send(failed(err));
+    }
+  });
+
+  app.post<{ Params: { id: string } }>('/api/context/:id/uploads/clear', async (req, reply) => {
+    if (!contextEntry(req.params.id)) return reply.code(404).send({ error: 'Unknown context' });
+    return { status: await deps.context.clearUploads(req.params.id) };
+  });
+
+  // What a review would be given for these words: a way to try the baseline out.
+  app.get<{ Params: { id: string }; Querystring: { q?: string } }>('/api/context/:id/search', async (req, reply) => {
+    if (!contextEntry(req.params.id)) return reply.code(404).send({ error: 'Unknown context' });
+    const terms = queryTerms({ title: req.query.q ?? '', issues: [], files: [], addedLines: [] });
+    return deps.context.retrieve(req.params.id, terms, cfg.limits.contextChars);
   });
 
   app.get<{ Params: { kind: string } }>('/api/leaderboard/:kind', async (req, reply) => {

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
+import { ContextStore } from '../src/context/store.ts';
 import { Db } from '../src/db.ts';
 import { RepoCache } from '../src/git/mirror.ts';
 import type { GitHub } from '../src/github/client.ts';
@@ -51,6 +52,7 @@ function makeRemotes(root: string) {
   fs.mkdirSync(docsWork);
   exec(docsWork, 'init', '-q');
   fs.writeFileSync(path.join(docsWork, 'guide.md'), 'The app can add numbers.\n');
+  fs.writeFileSync(path.join(docsWork, 'multiply.md'), '# Multiplying\nThe mul export multiplies two numbers. See the [guide](guide.md).\n');
   exec(docsWork, 'add', '.');
   exec(docsWork, 'commit', '-qm', 'Guide');
   execFileSync('git', ['init', '-q', '--bare', docsRemote]);
@@ -200,6 +202,42 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     assert.match(done.confidence_notes ?? '', /No consistency review ran/);
     assert.equal(done.related_prs, null);
     assert.match(runs.find((r) => r.purpose === 'main')!.instructions, /never use the categories "requirement" or "docs"/);
+  });
+
+  it('looks the change up in the repo context and gives it to every review', async () => {
+    const { db, cfg } = fresh('ctx');
+    cfg.update({ ...cfg.all, context: [{ id: 'ctx00001', repo: 'acme/*', sources: [{ repo: 'acme/handbook', path: '' }], notes: 'Amounts are in cents.' }] });
+    const { router, runs } = fakeRouter({ main: review(), security: review() });
+    const j = job(db, 'code,security');
+    const context = new ContextStore(db);
+    await new ReviewPipeline(fakeGitHub(base, head), cfg, db, router, cache, context).run(j, new AbortController().signal);
+
+    assert.equal(runs.length, 2);
+    for (const run of runs) {
+      assert.match(run.prompt, /## Project context/);
+      assert.match(run.prompt, /2 documents, from acme\/handbook@[0-9a-f]{7}/);
+      assert.match(run.prompt, /From the repository's reviewer: Amounts are in cents\./);
+      assert.match(run.prompt, /#### acme\/handbook: multiply\.md — Multiplying\nThe mul export multiplies two numbers\./);
+      assert.match(run.prompt, /#### acme\/handbook: guide\.md — guide \(linked with "Multiplying"\)\nThe app can add numbers\./);
+    }
+    const evidence = db.evidence(j.id) as Evidence;
+    assert.equal(evidence.context?.docs, 2);
+    assert.deepEqual(evidence.context?.hits.map((h) => [h.path, h.how]), [['multiply.md', 'matched'], ['guide.md', 'linked']]);
+    assert.ok(evidence.context?.terms.includes('mul'));
+    assert.ok(db.events(j.id).some((e) => /Project context: 2 section\(s\) from 2 document\(s\), out of 2 in the baseline/.test(e.message)));
+    assert.deepEqual(context.status('ctx00001').sources.map((s) => s.name), ['acme/handbook']);
+  });
+
+  it('reviews without the context when its repository cannot be read', async () => {
+    const { db, cfg } = fresh('ctxbroken');
+    cfg.update({ ...cfg.all, context: [{ id: 'ctx00002', repo: 'acme/*', sources: [{ repo: 'acme/missing', path: '' }], notes: '' }] });
+    const broken = new RepoCache(path.join(root, 'cache-broken'), null, (repo) => (repo === 'acme/missing' ? path.join(root, 'nope.git') : remote));
+    const { router, runs } = fakeRouter({ main: review(), security: review() });
+    const j = job(db, 'code,security');
+    await new ReviewPipeline(fakeGitHub(base, head), cfg, db, router, broken, new ContextStore(db)).run(j, new AbortController().signal);
+    assert.equal(db.job(j.id)!.state, 'done');
+    assert.doesNotMatch(runs[0].prompt, /## Project context/);
+    assert.ok(db.events(j.id).some((e) => e.level === 'warn' && /project context couldn't be refreshed/.test(e.message)));
   });
 
   it('treats a job from before the choice existed as code and security', async () => {

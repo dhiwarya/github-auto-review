@@ -14,6 +14,39 @@ export const reviewsOf = (job: { reviews: string | null }): ReviewType[] => {
   return picked.length ? picked : ['code', 'security'];
 };
 
+// One piece of a repo's context given to a review: a section of a markdown document.
+// "matched" sections were found by searching for the PR's words; "linked" ones are a step
+// away from a match in the context graph.
+export interface ContextHit {
+  source: string; // the context repository, or "uploaded"
+  path: string;
+  heading: string;
+  how: 'matched' | 'linked';
+  via: string | null; // for a linked section, the match it is connected to
+  text: string;
+}
+
+export interface ContextResult {
+  setId: string;
+  builtAt: string | null;
+  sources: { name: string; sha: string }[];
+  docs: number;
+  terms: string[];
+  map: string; // the most-referenced documents
+  hits: ContextHit[];
+}
+
+// Where a repo's context baseline stands.
+export interface ContextStatus {
+  builtAt: string | null;
+  sources: { name: string; sha: string }[];
+  docs: number;
+  uploads: number;
+  sections: number;
+  links: number;
+  error: string | null;
+}
+
 // Another open PR that touches the same code. Shown as an alert only: it never counts as
 // a finding, lowers confidence or stops an approval.
 export interface RelatedPr {
@@ -202,6 +235,14 @@ export interface Evidence {
   // Consistency reviews only: where the docs were read from, and the other open PRs that
   // change the same files.
   docs?: { paths: string[]; repo: string | null };
+  // The repo's context graph, when it has one: what was looked up and what came back.
+  context?: {
+    builtAt: string | null;
+    sources: { name: string; sha: string }[];
+    docs: number;
+    terms: string[];
+    hits: { source: string; path: string; heading: string; how: 'matched' | 'linked'; chars: number }[];
+  };
   otherPrs?: { number: number; title: string; url: string; files: number; staleDays: number | null }[];
   promptChars: number;
   contextGaps?: string[];

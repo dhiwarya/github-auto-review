@@ -3,14 +3,18 @@ import os from 'node:os';
 import path from 'node:path';
 import type { SettingsStore } from '../settings.ts';
 import type { Db } from '../db.ts';
+import { contextSection } from '../context/prompt.ts';
+import { queryTerms } from '../context/query.ts';
+import type { ContextStore } from '../context/store.ts';
 import type { Checkout, RepoCache } from '../git/mirror.ts';
+import { parsePatch } from '../github/diff.ts';
 import type { GitHub } from '../github/client.ts';
 import { removeLabel, showLabel } from '../github/labels.ts';
 import { getLinkedRefs, getPr, listDiscussion, listPrFiles, type PrInfo } from '../github/prs.ts';
 import { insertBeforeMarker, myVerdict, PendingReviewExists, isOwnComment, postReview, type InlineComment, type ReviewEvent } from '../github/publish.ts';
 import { NoProviderAvailable, type Router } from '../llm/router.ts';
 import { containsSecret, ownSecrets } from '../secrets.ts';
-import { PASS_OF, REVIEW_TYPES, reviewsOf, type Confidence, type Finding, type Job, type PostPreview, type Provider, type ReviewMode, type ReviewType } from '../types.ts';
+import { PASS_OF, REVIEW_TYPES, reviewsOf, type Confidence, type Evidence, type Finding, type Job, type PostPreview, type Provider, type ReviewMode, type ReviewType } from '../types.ts';
 import { assess, atLeast, openBlockers } from './confidence.ts';
 import { buildContext, docsSection, fence, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
 import { countsLine, inlineBody, recheckBody, summaryBody } from './format.ts';
@@ -40,8 +44,10 @@ export class ReviewPipeline {
   private readonly db: Db;
   private readonly router: Router;
   private readonly cache: RepoCache;
+  private readonly context: ContextStore | null;
 
-  constructor(gh: GitHub, cfg: SettingsStore, db: Db, router: Router, cache: RepoCache) {
+  constructor(gh: GitHub, cfg: SettingsStore, db: Db, router: Router, cache: RepoCache, context: ContextStore | null = null) {
+    this.context = context;
     this.gh = gh;
     this.cfg = cfg;
     this.db = db;
@@ -103,7 +109,7 @@ export class ReviewPipeline {
 
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), `auto-reviewer-work-${job.id}-`));
     let checkout: Checkout | null = null;
-    let docs: { dir: string; cleanup(): Promise<void> } | null = null;
+    let docs: { repos: { repo: string; dir: string }[]; cleanup(): Promise<void> } | null = null;
     try {
       checkout = await this.checkout(job, pr, signal, cfg);
 
@@ -121,6 +127,7 @@ export class ReviewPipeline {
         this.db.saveContextSnapshot(job.id, ctx.sourceSnapshot);
         await materializeSources(ctx.sourceSnapshot, checkout.dir);
       }
+      await this.projectContext(job, ctx, cfg);
       this.db.setEvidence(job.id, ctx.evidence);
       this.db.event(
         job.id,
@@ -151,10 +158,10 @@ export class ReviewPipeline {
           ? `## Other open pull requests that change the same files\n${fence('other-open-prs', relatedSection(related))}`
           : 'No other open pull request changes the same files, so related_prs is empty.';
         const docsCfg = cfg.docsFor(job.repo);
-        consistencyPrompt = `${ctx.prompt}\n\n${docsSection(docsCfg, docs?.dir ?? null)}\n\n${others}`;
+        consistencyPrompt = `${ctx.prompt}\n\n${docsSection(docsCfg, docs?.repos ?? [])}\n\n${others}`;
         this.db.setEvidence(job.id, {
           ...ctx.evidence,
-          docs: { paths: docsCfg?.paths ?? [], repo: docs ? (docsCfg?.docsRepo ?? null) : null },
+          docs: { paths: docsCfg?.paths ?? [], repo: docs?.repos.map((r) => r.repo).join(', ') || null },
           otherPrs: related.map((r) => ({ number: r.pr.number, title: r.pr.title, url: r.pr.url, files: r.files.length, staleDays: r.staleDays })),
           promptChars: consistencyPrompt.length,
         });
@@ -321,20 +328,69 @@ export class ReviewPipeline {
 
   // Checks out the repo's separate docs repository, if Settings names one, inside the PR
   // checkout so the consistency review can read it. Without it the review still runs.
-  private async externalDocs(job: Job, checkoutDir: string, cfg = this.cfg): Promise<{ dir: string; cleanup(): Promise<void> } | null> {
-    const docsRepo = cfg.docsFor(job.repo)?.docsRepo;
-    if (!docsRepo) return null;
-    const dir = `${EXTERNAL_DOCS_DIR}/${docsRepo.split('/')[1]}`;
+  private async externalDocs(job: Job, checkoutDir: string, cfg = this.cfg): Promise<{ repos: { repo: string; dir: string }[]; cleanup(): Promise<void> } | null> {
+    // The repo's docs repository, and the repositories its context is built from.
+    const wanted = [...new Set([cfg.docsFor(job.repo)?.docsRepo, ...(cfg.contextFor(job.repo)?.sources.map((s) => s.repo) ?? [])].filter((r): r is string => Boolean(r)))];
+    if (!wanted.length) return null;
+    const repos: { repo: string; dir: string }[] = [];
+    const cleanups: (() => Promise<void>)[] = [];
+    for (const docsRepo of wanted) {
+      const dir = `${EXTERNAL_DOCS_DIR}/${docsRepo.split('/')[1]}`;
+      try {
+        this.step(job, `Fetching the docs repository ${docsRepo}`, 20);
+        const sha = await this.cache.fetchDefault(docsRepo);
+        await fs.mkdir(path.join(checkoutDir, EXTERNAL_DOCS_DIR), { recursive: true });
+        const worktree = await this.cache.worktreeAt(docsRepo, sha, path.join(checkoutDir, dir));
+        repos.push({ repo: docsRepo, dir });
+        cleanups.push(worktree.cleanup);
+      } catch (err) {
+        const why = err instanceof Error ? err.message.split('\n')[0] : String(err);
+        this.db.event(job.id, `Couldn't read the docs repository ${docsRepo} (${why}); reviewing without it`, 'warn');
+      }
+    }
+    return repos.length ? { repos, cleanup: async () => void (await Promise.all(cleanups.map((c) => c().catch(() => {})))) } : null;
+  }
+
+  // Looks the change up in the repo's context graph and adds what it finds to the prompt of
+  // every review. The baseline is brought up to date first, which costs a fetch and no model
+  // run. What was found is kept with the job, so a retry reviews against the same context.
+  private async projectContext(job: Job, ctx: ReviewContext, cfg: SettingsStore) {
+    const entry = cfg.contextFor(job.repo);
+    if (!this.context || !entry) return;
+    const key = `job-context:${job.id}`;
     try {
-      this.step(job, `Fetching the docs repository ${docsRepo}`, 20);
-      const sha = await this.cache.fetchDefault(docsRepo);
-      await fs.mkdir(path.join(checkoutDir, EXTERNAL_DOCS_DIR));
-      const worktree = await this.cache.worktreeAt(docsRepo, sha, path.join(checkoutDir, dir));
-      return { dir, cleanup: worktree.cleanup };
+      let saved = JSON.parse(this.db.getKv(key) ?? 'null') as { section: string; evidence: NonNullable<Evidence['context']> } | null;
+      if (!saved) {
+        this.step(job, 'Looking up the project context', 22);
+        const status = await this.context.refresh(entry, this.cache);
+        if (status.error) this.db.event(job.id, `Part of the project context couldn't be refreshed (${status.error}); using the last baseline`, 'warn');
+        const terms = queryTerms({
+          title: ctx.pr.title,
+          issues: ctx.issues.map((i) => i.title),
+          files: ctx.reviewFiles.map((f) => f.filename),
+          addedLines: ctx.reviewFiles.flatMap((f) => [...parsePatch(f.patch).addedLines.values()]),
+        });
+        const result = this.context.retrieve(entry.id, terms, cfg.limits.contextChars);
+        saved = {
+          section: result.hits.length || entry.notes ? contextSection(result, entry.notes) : '',
+          evidence: {
+            builtAt: result.builtAt,
+            sources: result.sources,
+            docs: result.docs,
+            terms,
+            hits: result.hits.map((h) => ({ source: h.source, path: h.path, heading: h.heading, how: h.how, chars: h.text.length })),
+          },
+        };
+        this.db.setKv(key, JSON.stringify(saved));
+        this.db.event(job.id, `Project context: ${result.hits.length} section(s) from ${new Set(result.hits.map((h) => h.path)).size} document(s), out of ${result.docs} in the baseline`);
+      }
+      if (saved.section) {
+        ctx.prompt += `\n\n${saved.section}`;
+        if (ctx.contextPrompt) ctx.contextPrompt += `\n\n${saved.section}`;
+      }
+      ctx.evidence = { ...ctx.evidence, context: saved.evidence, promptChars: ctx.prompt.length };
     } catch (err) {
-      const why = err instanceof Error ? err.message.split('\n')[0] : String(err);
-      this.db.event(job.id, `Couldn't read the docs repository ${docsRepo} (${why}); reviewing without it`, 'warn');
-      return null;
+      this.db.event(job.id, `Couldn't look up the project context (${err instanceof Error ? err.message.split('\n')[0] : err}); reviewing without it`, 'warn');
     }
   }
 

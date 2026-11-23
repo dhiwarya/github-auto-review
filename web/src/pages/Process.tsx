@@ -127,6 +127,37 @@ function EvidenceBody({ evidence }: { evidence: Evidence }) {
         )}
       </dd>
 
+      {evidence.context && (
+        <>
+          <dt>Project context</dt>
+          <dd>
+            <div>
+              {evidence.context.hits.length
+                ? `${evidence.context.hits.length} section${evidence.context.hits.length === 1 ? '' : 's'} given to every review`
+                : 'Nothing in the baseline matched this change'}
+              <span className="small muted">
+                {' '}
+                · baseline of {evidence.context.docs.toLocaleString()} documents
+                {evidence.context.sources.map((s) => ` · ${s.name}@${shortSha(s.sha)}`).join('')}
+              </span>
+            </div>
+            {evidence.context.hits.length > 0 && (
+              <ul className="plain-list">
+                {evidence.context.hits.map((h, i) => (
+                  <li key={i}>
+                    {h.heading}{' '}
+                    <span className="small muted">
+                      · {h.source}: {h.path} · {h.how} · {h.chars.toLocaleString()} characters
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="small muted">Looked up: {evidence.context.terms.slice(0, 24).join(', ')}</div>
+          </dd>
+        </>
+      )}
+
       {evidence.docs && (
         <>
           <dt>Docs</dt>

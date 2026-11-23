@@ -1306,3 +1306,18 @@ textarea {
 .related li + li {
   margin-top: 6px;
 }
+
+/* Repo context */
+
+.context-baseline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.context-baseline .plain-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

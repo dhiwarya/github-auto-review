@@ -120,6 +120,7 @@ export class SettingsStore {
   get approval() { return this.data.approval; }
   get reviews() { return this.data.reviews; }
   get consistency() { return this.data.consistency; }
+  get context() { return this.data.context; }
   get keepCheckouts() { return this.data.keepCheckouts; }
 
   // ---- helpers
@@ -146,6 +147,11 @@ export class SettingsStore {
     const hit = this.data.repoReviews.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase()));
     const on = hit ?? this.data.reviews;
     return REVIEW_TYPES.filter((r) => on[r]);
+  }
+
+  // The context set for this repo, if you set one up.
+  contextFor(repo: string): Settings['context'][number] | null {
+    return this.data.context.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase())) ?? null;
   }
 
   // Where this repo's docs live, if you said.

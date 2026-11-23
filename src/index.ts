@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ContextStore } from './context/store.ts';
 import { Db } from './db.ts';
 import { cleanupStaleCheckouts, RepoCache } from './git/mirror.ts';
 import { connectGitHub } from './github/client.ts';
@@ -35,11 +36,13 @@ const cache = new RepoCache(path.join(dataPath, 'repos'), gh.token);
 await cache.pruneAll();
 
 const router = new Router(db, cfg);
-const pipeline = new ReviewPipeline(gh, cfg, db, router, cache);
+const context = new ContextStore(db);
+context.prune(cfg.context.map((c) => c.id));
+const pipeline = new ReviewPipeline(gh, cfg, db, router, cache, context);
 const worker = new Worker(db, cfg, pipeline);
 const sync = new OutcomeSync(gh, cfg, db);
 const poller = new Poller(gh, cfg, db, worker, sync);
-const app = await startServer({ cfg, host, allowedHosts, port, db, gh, router, worker, poller, pipeline });
+const app = await startServer({ cfg, host, allowedHosts, port, db, gh, router, worker, poller, pipeline, context, cache });
 
 worker.start();
 poller.start();
