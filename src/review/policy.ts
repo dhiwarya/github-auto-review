@@ -1,14 +1,18 @@
-import { SettingsSchema, type Settings } from '../settings-schema.ts';
+import { fromLegacyRepoSettings } from '../settings-legacy.ts';
+import { RepoSettingsSchema, type RepoSettingsData } from '../settings-schema.ts';
 import type { Finding, Job, StrictReport } from '../types.ts';
 
 export const POLICY_VERSION = 2;
-export interface ReviewPolicy { version: number; settings: Settings }
+// The repo's settings as they were when the review started.
+export interface ReviewPolicy { version: number; settings: RepoSettingsData }
 
 export function readPolicy(job: Job): ReviewPolicy | null {
   try {
     const raw = JSON.parse(job.review_policy ?? 'null');
     if (raw?.version !== POLICY_VERSION && raw?.version !== 1) return null;
-    return { version: raw.version, settings: SettingsSchema.parse(raw.settings) };
+    // Reviews from before each repo had its own settings kept the app-wide ones, which name no repo.
+    const settings = raw.settings && typeof raw.settings.repo !== 'string' ? fromLegacyRepoSettings(raw.settings, job.repo) : raw.settings;
+    return { version: raw.version, settings: RepoSettingsSchema.parse(settings) };
   } catch { return null; }
 }
 
@@ -21,7 +25,7 @@ export function readReport(job: Job): StrictReport | null {
 
 export function hasStrictCoverage(job: Job | undefined): boolean {
   const policy = job && readPolicy(job);
-  if (!job || policy?.version !== POLICY_VERSION || policy.settings.reviewProfile !== 'strict') return false;
+  if (!job || policy?.version !== POLICY_VERSION || policy.settings.profile !== 'strict') return false;
   const report = readReport(job);
   return !!report && report.version === POLICY_VERSION && report.complete && !report.gaps.length
     && ['main/', 'security/', 'adversarial/'].every((purpose) => report.stages.some((s) => s.purpose.startsWith(purpose) && s.state === 'done'))
@@ -30,9 +34,9 @@ export function hasStrictCoverage(job: Job | undefined): boolean {
 
 export function strictApprovalBlocks(job: Job, findings: Finding[], currentlyStrict = false): string[] {
   const policy = readPolicy(job);
-  if (!currentlyStrict && policy?.settings.reviewProfile !== 'strict') return [];
+  if (!currentlyStrict && policy?.settings.profile !== 'strict') return [];
   const blocks: string[] = [];
-  if (policy?.settings.reviewProfile !== 'strict') blocks.push('This job has no Strict review policy; run a full Strict review');
+  if (policy?.settings.profile !== 'strict') blocks.push('This job has no Strict review policy; run a full Strict review');
   const report = readReport(job);
   if (!report) blocks.push('Strict coverage and completion records are missing');
   else {

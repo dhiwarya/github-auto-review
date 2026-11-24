@@ -5,6 +5,7 @@ import { JobView } from './pages/JobView.tsx';
 import { LeaderboardPage } from './pages/Leaderboard.tsx';
 import { QueuePage } from './pages/Queue.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
+import { reviewedRepos } from './repos.ts';
 import { clockTime, ThemeToggle, timeAgo } from './ui.tsx';
 
 function useHashRoute(): string[] {
@@ -48,7 +49,8 @@ function Providers({ overview }: { overview: Overview }) {
   const { provider, fallbackToOther } = overview.settings;
   const primary = overview.providers.find((p) => p.provider === provider);
   const backup = overview.providers.find((p) => p.provider !== provider);
-  const strict = overview.settings.profile === 'strict';
+  // The Strict profile is chosen per repo; it has the other provider review independently.
+  const strict = reviewedRepos(overview.repos).some((r) => r.profile === 'strict');
   const showBackup = backup && (strict || (fallbackToOther && (primary?.blocked_until || backup.blocked_until)));
   return (
     <>
@@ -62,6 +64,8 @@ function Header({ overview, route }: { overview: Overview | null; route: string[
   useTick();
   const [polling, setPolling] = useState(false);
   const tab = route[0] ?? 'queue';
+  const watched = reviewedRepos(overview?.repos);
+  const dryRuns = watched.filter((r) => r.dryRun);
   const poll = async () => {
     setPolling(true);
     await postJson('/api/poll').catch(() => {});
@@ -121,14 +125,14 @@ function Header({ overview, route }: { overview: Overview | null; route: string[
       </div>
       {overview?.needs_setup ? (
         <div className="banner">
-          <strong>No repositories yet.</strong> Nothing is reviewed until you list the repos to review.{' '}
-          <a href="#/settings">Open Settings</a>
+          <strong>{overview.repos.length ? 'Every repository is switched off.' : 'No repositories yet.'}</strong> Nothing is reviewed until you{' '}
+          {overview.repos.length ? 'switch one on' : 'add the repos to review'}. <a href="#/settings">Open Settings</a>
         </div>
       ) : (
-        overview?.dry_run && (
+        dryRuns.length > 0 && (
           <div className="banner">
-            <strong>Dry run.</strong> Reviews run, but nothing is posted to GitHub and no labels change. Turn it off in{' '}
-            <a href="#/settings">Settings</a> when the reviews look right.
+            <strong>Dry run{dryRuns.length === watched.length ? '' : ` for ${dryRuns.map((r) => r.repo).join(', ')}`}.</strong> {dryRuns.length === watched.length ? 'Reviews run' : 'Its reviews run'}, but nothing is
+            posted to GitHub and no labels change. Turn it off in <a href="#/settings">Settings</a> when the reviews look right.
           </div>
         )
       )}
@@ -143,7 +147,7 @@ export function App() {
   let page;
   if (route[0] === 'jobs' && route[1]) page = <JobView id={Number(route[1])} />;
   else if (route[0] === 'leaderboard') page = <LeaderboardPage kind={(route[1] as 'models' | 'repos' | 'authors') ?? 'models'} />;
-  else if (route[0] === 'settings') page = <SettingsPage overview={overview} />;
+  else if (route[0] === 'settings') page = <SettingsPage overview={overview} tab={route[1] === 'app' ? 'app' : 'repos'} />;
   else page = <QueuePage overview={overview} />;
   return (
     <>

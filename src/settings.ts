@@ -3,16 +3,72 @@ import path from 'node:path';
 import picomatch from 'picomatch';
 import { bus } from './bus.ts';
 import type { Db } from './db.ts';
-import { SettingsSchema, type Settings, type SettingsIssue } from './settings-schema.ts';
-import { REVIEW_TYPES, type Provider, type ReviewMode, type ReviewType } from './types.ts';
+import { fromLegacySettings, isLegacySettings } from './settings-legacy.ts';
+import { RepoSchema, SettingsSchema, type RepoConfig, type RepoSettingsData, type Settings, type SettingsIssue } from './settings-schema.ts';
+import { REVIEW_TYPES, type Provider, type ReviewType } from './types.ts';
 
-export { SettingsSchema, type Settings, type SettingsIssue };
+export { SettingsSchema, type RepoConfig, type RepoSettingsData, type Settings, type SettingsIssue };
 
 const KEY = 'settings';
 type Matcher = (s: string) => boolean;
 const never: Matcher = () => false;
 const compile = (patterns: string[], opts?: picomatch.PicomatchOptions): Matcher =>
   patterns.length ? picomatch(patterns, opts) : never;
+const isPattern = (repo: string) => /[*?]/.test(repo);
+
+type Models = Settings['models'];
+const modelChain = (models: Models, p: Provider): (string | null)[] => [...new Set([models[p].model, ...models[p].fallbackModels])];
+// The chosen provider first, then the other one if falling back is on.
+const providerOrder = (models: Models): Provider[] => {
+  const other: Provider = models.provider === 'claude' ? 'codex' : 'claude';
+  return models.fallbackToOther ? [models.provider, other] : [models.provider];
+};
+
+// One repo's settings, with the app's alongside: everything a review of that repo needs.
+// Read live through SettingsStore.forRepo, or rebuilt from the copy a job keeps.
+export class RepoSettings {
+  readonly data: RepoSettingsData;
+  private readonly excluded: Matcher;
+
+  constructor(data: RepoSettingsData) {
+    this.data = data;
+    this.excluded = compile(data.excludeGlobs, { dot: true });
+  }
+
+  get repo() { return this.data.repo; }
+  get enabled() { return this.data.enabled; }
+  get dryRun() { return this.data.dryRun; }
+  get mode() { return this.data.mode; }
+  get profile() { return this.data.profile; }
+  get approval() { return this.data.approval; }
+  get labels() { return this.data.labels; }
+  get skipAuthors() { return this.data.skipAuthors; }
+  get stalePrDays() { return this.data.stalePrDays; }
+  get context() { return this.data.context; }
+  get strict() { return this.data.strict; }
+  get models() { return this.data.models; }
+  get schedule() { return this.data.schedule; }
+  get limits() { return this.data.limits; }
+  get keepCheckouts() { return this.data.keepCheckouts; }
+
+  // The reviews a PR in this repo gets, in a fixed order.
+  get reviews(): ReviewType[] {
+    return REVIEW_TYPES.filter((r) => this.data.reviews[r]);
+  }
+
+  // Where this repo's docs live, if you said.
+  get docs(): RepoConfig['docs'] | null {
+    const d = this.data.docs;
+    return d.paths.length || d.docsRepo || d.notes ? d : null;
+  }
+
+  isExcludedFile(file: string): boolean {
+    return this.excluded(file);
+  }
+
+  modelChain(p: Provider) { return modelChain(this.data.models, p); }
+  providerOrder() { return providerOrder(this.data.models); }
+}
 
 // The app's settings, stored in its database and edited from the dashboard. Every part of
 // the app reads them through this object at the moment it needs them, so a saved change
@@ -20,29 +76,32 @@ const compile = (patterns: string[], opts?: picomatch.PicomatchOptions): Matcher
 export class SettingsStore {
   private readonly db: Db;
   private data: Settings;
-  private allow: Matcher = never;
-  private deny: Matcher = never;
-  private excluded: Matcher = never;
+  // The matching entry for each repo asked about, until the settings change.
+  private readonly resolved = new Map<string, RepoSettings>();
 
   constructor(db: Db, snapshot?: Settings) {
     this.db = db;
     this.data = SettingsStore.defaults();
     const raw = snapshot ? JSON.stringify(snapshot) : db.getKv(KEY);
     if (raw) {
-      const input = JSON.parse(raw);
-      const upgrade = !snapshot && input.strict && input.strict.maxContinuations === undefined;
-      if (upgrade) {
+      let input = JSON.parse(raw);
+      // Settings from before each repo had its own entry.
+      const legacy = isLegacySettings(input);
+      if (legacy) input = fromLegacySettings(input);
+      const upgrade = !snapshot && (legacy || (input.strict && input.strict.maxContinuations === undefined));
+      if (input.strict && input.strict.maxContinuations === undefined) {
         if (input.strict.maxBatches === 8) input.strict.maxBatches = 16;
         if (input.strict.maxRuns === 32) input.strict.maxRuns = 64;
       }
       const parsed = SettingsSchema.safeParse(input);
       if (parsed.success) {
         this.data = parsed.data;
+        // The old shape is kept beside it, in case you go back to an earlier version.
+        if (legacy && !snapshot) db.setKv(`${KEY}:before-repos`, raw);
         if (upgrade) db.setKv(KEY, JSON.stringify(this.data));
       }
       else console.error('[settings] stored settings are invalid; using defaults until they are saved again', parsed.error.issues);
     }
-    this.compile();
   }
 
   static defaults(): Settings {
@@ -68,16 +127,10 @@ export class SettingsStore {
     }
     this.data = parsed.data;
     this.db.setKv(KEY, JSON.stringify(this.data));
-    this.compile();
+    this.resolved.clear();
     bus.emit('settings');
     bus.overviewChanged();
     return { ok: true, settings: this.all };
-  }
-
-  private compile() {
-    this.allow = compile(this.data.repos.allow.map((p) => p.toLowerCase()));
-    this.deny = compile(this.data.repos.deny.map((p) => p.toLowerCase()));
-    this.excluded = compile(this.data.excludeGlobs, { dot: true });
   }
 
   // One-time import from the config file used before settings moved into the dashboard.
@@ -95,7 +148,7 @@ export class SettingsStore {
     if (raw.repoModes && !Array.isArray(raw.repoModes)) {
       raw.repoModes = Object.entries(raw.repoModes as Record<string, string>).map(([repo, mode]) => ({ repo, mode }));
     }
-    const result = this.update(raw);
+    const result = this.update(isLegacySettings(raw) ? fromLegacySettings(raw) : raw);
     if (!result.ok) {
       return `Didn't import ${file}: ${result.issues.map((i) => `${i.path}: ${i.message}`).join('; ')}. Set things up in the dashboard instead.`;
     }
@@ -107,67 +160,53 @@ export class SettingsStore {
   // ---- sections, read live
 
   get repos() { return this.data.repos; }
-  get reviewProfile() { return this.data.reviewProfile; }
   get strict() { return this.data.strict; }
-  get dryRun() { return this.data.dryRun; }
-  get defaultMode() { return this.data.defaultMode; }
-  get skipAuthors() { return this.data.skipAuthors; }
-  get excludeGlobs() { return this.data.excludeGlobs; }
   get models() { return this.data.models; }
   get schedule() { return this.data.schedule; }
   get limits() { return this.data.limits; }
-  get labels() { return this.data.labels; }
-  get approval() { return this.data.approval; }
-  get reviews() { return this.data.reviews; }
-  get consistency() { return this.data.consistency; }
-  get context() { return this.data.context; }
   get keepCheckouts() { return this.data.keepCheckouts; }
 
   // ---- helpers
 
+  // Nothing is reviewed until a repo is listed and switched on.
   get needsSetup(): boolean {
-    return this.data.repos.allow.length === 0;
+    return !this.data.repos.some((r) => r.enabled);
+  }
+
+  // The entry that decides for this repo: its own if it has one, otherwise the first
+  // pattern that matches it.
+  entryFor(repo: string): RepoConfig | null {
+    const name = repo.toLowerCase();
+    return (
+      this.data.repos.find((r) => r.repo.toLowerCase() === name) ??
+      this.data.repos.find((r) => isPattern(r.repo) && picomatch.isMatch(name, r.repo.toLowerCase())) ??
+      null
+    );
   }
 
   isRepoAllowed(repo: string): boolean {
-    return this.allow(repo.toLowerCase()) && !this.deny(repo.toLowerCase());
+    return this.entryFor(repo)?.enabled === true;
   }
 
-  isExcludedFile(file: string): boolean {
-    return this.excluded(file);
+  // This repo's settings as they are now. A repo that isn't listed gets the defaults,
+  // switched off.
+  forRepo(repo: string): RepoSettings {
+    const key = repo.toLowerCase();
+    let hit = this.resolved.get(key);
+    if (!hit) {
+      const entry = this.entryFor(repo) ?? RepoSchema.parse({ repo, enabled: false });
+      const { repos: _repos, ...app } = this.all;
+      hit = new RepoSettings({ ...structuredClone(entry), ...app });
+      this.resolved.set(key, hit);
+    }
+    return hit;
   }
 
-  modeFor(repo: string): ReviewMode {
-    const hit = this.data.repoModes.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase()));
-    return hit ? hit.mode : this.data.defaultMode;
+  // Every repo's context set, for the baseline store.
+  get contextSets(): (RepoConfig['context'] & { repo: string })[] {
+    return this.data.repos.map((r) => ({ ...r.context, repo: r.repo }));
   }
 
-  // The reviews a PR in this repo gets, in a fixed order.
-  reviewsFor(repo: string): ReviewType[] {
-    const hit = this.data.repoReviews.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase()));
-    const on = hit ?? this.data.reviews;
-    return REVIEW_TYPES.filter((r) => on[r]);
-  }
-
-  // The context set for this repo, if you set one up.
-  contextFor(repo: string): Settings['context'][number] | null {
-    return this.data.context.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase())) ?? null;
-  }
-
-  // Where this repo's docs live, if you said.
-  docsFor(repo: string): Settings['consistency']['docs'][number] | null {
-    return this.data.consistency.docs.find((o) => picomatch.isMatch(repo.toLowerCase(), o.repo.toLowerCase())) ?? null;
-  }
-
-  modelChain(p: Provider): (string | null)[] {
-    const m = this.data.models[p];
-    return [...new Set([m.model, ...m.fallbackModels])];
-  }
-
-  // The chosen provider first, then the other one if falling back is on.
-  providerOrder(): Provider[] {
-    const first = this.data.models.provider;
-    const other: Provider = first === 'claude' ? 'codex' : 'claude';
-    return this.data.models.fallbackToOther ? [first, other] : [first];
-  }
+  modelChain(p: Provider) { return modelChain(this.data.models, p); }
+  providerOrder() { return providerOrder(this.data.models); }
 }

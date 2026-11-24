@@ -8,6 +8,7 @@ import { rateLimited, type GitHub } from '../src/github/client.ts';
 import { RepoWatcher } from '../src/github/watch.ts';
 import { Poller } from '../src/jobs/poller.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 
 const pr = (repo: string, number: number, reviewers: string[], extra: Record<string, unknown> = {}) => ({
   number,
@@ -58,7 +59,7 @@ describe('RepoWatcher', () => {
   });
 
   it('asks again with the last ETag and reuses the answer when GitHub says nothing changed', async () => {
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] } });
+    setRepo(cfg, 'acme/api');
     const fake = fakeGitHub({ 'acme/api': [pr('acme/api', 1, ['me']), pr('acme/api', 2, ['someone'])] });
     const w = new RepoWatcher(fake.gh, cfg, 0);
 
@@ -84,7 +85,7 @@ describe('RepoWatcher', () => {
   });
 
   it('expands patterns from the repos you can access, and applies the deny list', async () => {
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/*', 'solo/tool'], deny: ['acme/secret'] } });
+    setRepo(cfg, 'acme/*'); setRepo(cfg, 'solo/tool'); setRepo(cfg, 'acme/secret', { enabled: false });
     const fake = fakeGitHub({
       'GET /user/repos': [
         { full_name: 'acme/api', archived: false },
@@ -98,7 +99,7 @@ describe('RepoWatcher', () => {
   });
 
   it('reports a repo it can’t reach instead of failing the whole check', async () => {
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/missing'], deny: [] } });
+    setRepo(cfg, 'acme/missing');
     const w = new RepoWatcher(fakeGitHub({}).gh, cfg, 0);
     await assert.rejects(w.openPrs('acme/missing'));
     assert.match(w.watchStatus()[0].error ?? '', /no access/);
@@ -122,7 +123,7 @@ describe('rate limits', () => {
     const db = new Db(dir);
     try {
       const cfg = new SettingsStore(db);
-      cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] } });
+      setRepo(cfg, 'acme/api');
       const gh = { me: 'me', rateLimits: new Map() } as unknown as GitHub;
       const watcher = {
         stats: { requests: 0, notModified: 0 },
@@ -149,7 +150,7 @@ describe('rate limits', () => {
     const db = new Db(dir);
     try {
       const cfg = new SettingsStore(db);
-      cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] } });
+      setRepo(cfg, 'acme/api');
       const reset = new Date(Date.now() + 20 * 60_000).toISOString();
       const gh = { me: 'me', rateLimits: new Map([['core', { resource: 'core', limit: 5000, remaining: 120, reset }]]) } as unknown as GitHub;
       let asked = false;

@@ -4,9 +4,9 @@ A personal review agent that runs on your own machine. When someone requests you
 
 ## What a review covers
 
-You choose which reviews each PR gets, in Settings: a default set, exceptions per repo, and tick boxes when you add a PR by hand. Each review is its own model run, so fewer reviews use less of your subscription. All three are on by default.
+You choose which reviews each PR gets: every repo has its own set in Settings, and there are tick boxes when you add a PR by hand. Each review is its own model run, so fewer reviews use less of your subscription. All three are on by default.
 
-The **Standard** profile uses one provider for the review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page. The **Strict** profile requires both providers, as described below.
+The **Standard** profile uses one provider for the review: **Codex** by default (Sol 6.1, then Sol 6), with **Claude** taking over only if Codex runs out (Opus 5.5, then Opus 4.8). You can switch providers, or turn the fallback off, on the dashboard's Settings page. The **Strict** profile, chosen per repo, requires both providers, as described below.
 
 Security reviews can trip a provider's safety filter (OpenAI may flag one as "possible cybersecurity risk"). That run then goes to the next model in the same order, ending with Claude if the fallback is on. Nothing is paused, since the refusal is about that PR, not the model. The security instructions say plainly that this is a defensive review of the team's own code, and never ask for exploit code or payloads.
 
@@ -20,7 +20,7 @@ Then every blocker and major is double-checked in a second, separate run. Refute
 
 ### Repo context
 
-A repo can have **context**: markdown that explains how the system is meant to work, such as architecture, design documents, domain rules and conventions. You set it up in **Settings → Repo context**, per repo, from:
+A repo can have **context**: markdown that explains how the system is meant to work, such as architecture, design documents, domain rules and conventions. It belongs to that repo alone: you set it up under the repo in **Settings → Repositories → Context**, from:
 
 - **Context repositories**, such as a separate docs repo, optionally one folder of it.
 - **Uploaded markdown**: a folder or files dropped onto the dashboard (`.md`, `.mdx`, `.markdown`, `.txt`; up to 20 MB at a time).
@@ -43,7 +43,7 @@ Keyword search matches the words used, not their meaning: a PR and a document th
 
 ### The consistency review
 
-- **Docs.** Settings says where each repo's docs are: folders or files in the repo, a separate docs repository, and any notes for the reviewer. A separate docs repo is checked out read-only next to the PR for the review. Without an entry, the reviewer looks for docs in the repo itself.
+- **Docs.** Each repo's settings say where its docs are: folders or files in the repo, a separate docs repository, and any notes for the reviewer. A separate docs repo is checked out read-only next to the PR for the review. Left empty, the reviewer looks for docs in the repo itself.
 - **Other open PRs.** The app compares the PR with the repo's 40 most recently active open PRs, using the local repo copy (one GitHub request in total), and shows the reviewer the ones that change the same files. What the reviewer makes of them is listed in the summary as **Related open PRs**: overlap, conflict or duplicate. These are alerts only. They are never findings, so they can't lower the confidence, stop an approval or request changes. A PR with no activity for 30 days (configurable) counts as unmaintained, and an alert about it is always low confidence.
 
 After that, plain code (no model) checks each finding:
@@ -58,9 +58,9 @@ Severity scale: **blocker**, **major**, **minor**, **nit**.
 
 ### Strict reviews
 
-Strict and the review choice work together: Strict always reviews code, security and the linked issues itself, whatever is ticked in **Settings → Reviews**. With **Consistency** on, one more run on the primary provider checks the docs and the other open PRs after the Strict stages; requirements stay with Strict's checklist.
+Strict and the review choice work together: Strict always reviews code, security and the linked issues itself, whatever is ticked under the repo's **Reviews**. With **Consistency** on, one more run on the primary provider checks the docs and the other open PRs after the Strict stages; requirements stay with Strict's checklist.
 
-Select **Settings → Reviewer → Review profile → Strict**. Standard remains the default for existing and new installations. Selecting Strict does not change dry run, draft/publish mode, or the repository list. Both Codex and Claude CLI logins are required.
+Strict is chosen per repo: pick the repo in **Settings → Repositories**, then **Reviews → Review profile → Strict**. Standard is the default for a new repo. Selecting Strict does not change the repo's dry run or draft/publish mode, or any other repo. Both Codex and Claude CLI logins are required.
 
 Strict reviews run code/requirements and security passes on the primary provider, then a fresh adversarial pass on the other provider. The independent pass does not see the current review's other findings. Serious findings are verified in fresh runs on the provider opposite the one that raised them. Model fallback stays within the assigned provider; the Standard cross-provider fallback switch does not weaken this requirement.
 
@@ -83,7 +83,7 @@ Requirement assessments use the parent issue refs from the retrieved manifest. C
 
 Successful, schema-valid stages are saved under their exact input fingerprint. After an unavailable provider recovers, only missing stages run again. A stage with missing coverage continues with the unexamined sections and merges the results. The app estimates discovery/consolidation work before running and reserves attempts for later stages and verification. Other stage failures use bounded job retries. Exhausted budgets require a new full review with suitable settings. Repeated calls count against the total job attempt budget, including calls from earlier attempts. Stored settings with the previous default 8 batches/32 attempts are upgraded once to 16/64; other custom values are preserved.
 
-Requirements are assessed as a checklist. An issue the PR closes represents its promised full scope. Merely mentioning an issue does not promise completion of its entire roadmap: deferred or unrelated criteria need source-backed scope evidence, corroboration against the code, and independent reviewer agreement. Missing promised behavior still blocks approval. Operational/manual acceptance that cannot be established from code is recorded as externally unverifiable and blocks approval without making completed code coverage unfinished.
+Requirements are assessed as a checklist. An issue the PR closes represents its promised full scope. An issue the PR only mentions is context: each criterion is marked as promised or not, and only what the PR takes on counts toward approval (if either reviewer reads a criterion as promised, it counts). A promised criterion that is deferred needs source-backed scope evidence, corroboration against the code, and independent reviewer agreement. Missing promised behavior still blocks approval. Operational/manual acceptance that cannot be established from code is recorded as externally unverifiable and blocks approval without making completed code coverage unfinished.
 
 Strict approval always requires high confidence, complete required stages and coverage, no open blocker or major from any review, no unresolved serious verification, no material requirement gaps, and no unresolved review questions. The existing commit, draft-PR, self-approval, manual-change-request and credential checks still apply. The preview and actual post use the same decision. A failed verifier never silently qualifies a Strict review for approval. Uncertain serious concerns retain their severity and appear as clearly marked summary items for human inspection.
 
@@ -128,7 +128,16 @@ Adding labels needs triage access. If the token can't add them, the review still
 
 ## Comments
 
-Plain markdown with no emoji and no model details. Inline comments read `**Blocker (bug):** title`, then the problem and a suggestion. The summary opens with the counts (`**1 blocker, 2 minor**`, or `**No issues found.**`), then the overall assessment, requirements, findings not tied to a line, questions and what was fixed since the last review, each only when there is something to say. Comments carry no signature; a hidden marker ties each one back to its finding. If some reviews were switched off, the summary says which ones it covers. The model, confidence and double-check details stay on the dashboard.
+Written for the PR's author to read quickly. Plain markdown, no emoji, no model details. The summary has:
+
+1. **A one-line verdict:** `Approved. Nothing blocking.`, `Looks good. 2 small suggestions, nothing blocking.`, `Needs changes. 1 blocker, 2 major.`, `Looks good, but I'm not approving yet.` or `Partial review.` It matches what was actually posted, because the comment is written again right before posting.
+2. **A short summary:** what the PR does and whether it does it correctly, from one review (the others stay on the dashboard). It names the linked issue only when the PR doesn't fully match it, and mentions what was fixed since the last review.
+3. **Needs fixing / Suggestions:** findings that aren't on a changed line. The rest are inline comments, which read `**Major:** title`, then the problem and a suggestion.
+4. **Not approving yet:** at most two plain reasons the author can act on, plus any open questions. Internal reasons (approving switched off for the repo, confidence levels, review bookkeeping) stay on the dashboard.
+5. **Questions** (at most three, repeats merged) and **Heads up** (other open PRs), only when there are any.
+6. A small footer naming the reviews that ran, the commit, and any skipped files.
+
+Each section appears only when it has something in it. Comments carry no signature; hidden markers tie them back to the review and its findings.
 
 ## Confidence and approval
 
@@ -191,9 +200,9 @@ Start it:
 npm start
 ```
 
-Open http://127.0.0.1:4477, go to **Settings**, and list the repos to review. Nothing is reviewed until you do.
+Open http://127.0.0.1:4477, go to **Settings**, and add the repos to review. Nothing is reviewed until you do.
 
-It starts in **dry run**: reviews run and appear in the dashboard, but nothing is posted. Once the findings look right, turn dry run off in Settings.
+A new repo starts in **dry run**: reviews run and appear in the dashboard, but nothing is posted. Once the findings look right, turn dry run off for that repo in Settings.
 
 ### Start at login
 
@@ -259,35 +268,47 @@ The keep rate is learned automatically. After you submit a draft, the app checks
 
 ## Settings
 
-Everything is set on the dashboard's **Settings** page and stored in the app's database (`data/reviewer.sqlite`). A save is checked as a whole and applies without a restart. Review policies are captured when a job starts; model and review-budget changes apply to new jobs, while stricter approval restrictions also apply before posting. Defaults:
+Everything is set on the dashboard's **Settings** page and stored in the app's database (`data/reviewer.sqlite`). A save is checked as a whole and applies without a restart. A review keeps the settings its repo had when it started; model and review-budget changes apply to new jobs, while stricter approval restrictions also apply before posting.
+
+Settings come in two parts.
+
+**Repositories** holds one entry per repo, and each repo has its own settings. Only repos with an entry are ever reviewed. An entry can also be a pattern such as `owner/*`: it covers every repo it matches that has no entry of its own. Adding a repo starts it from the defaults below, or you can copy the review settings of another repo.
+
+| Section | Setting | Default for a new repo |
+| --- | --- | --- |
+| Repository | Review pull requests here | On. Off keeps the settings and context without reviewing |
+| Posting to GitHub | Dry run | On |
+| | How reviews are posted | Draft |
+| | Approve PRs that have no blockers | On, when confidence is at least high |
+| Reviews | Review profile | Standard; select Strict for independent review and required coverage |
+| | Code / Security / Consistency | All on |
+| Context | Context repositories, uploads and notes | None |
+| Docs and other PRs | Where the docs are | Not set: the reviewer looks in the repo itself |
+| | Another open PR is unmaintained after | 30 days without activity |
+| Files and authors | Leave out of reviews | Lockfiles, vendored and generated files |
+| | Skip PRs by | dependabot, renovate, github-actions |
+| Labels | While reviewing / Left feedback / Approved | `dh: on review`, `dh: feedback`, `dh: approved` |
+
+**App** holds what every repo shares, because it comes out of the same subscriptions:
 
 | Section | Setting | Default |
 | --- | --- | --- |
-| Repositories | Review pull requests in / Never review | None. Add `owner/repo` or `owner/*` |
-| Posting to GitHub | Dry run | On |
-| | How reviews are posted | Draft, with optional exceptions per repo |
-| | Approve PRs that have no blockers | On, when confidence is at least high |
-| Repo context | Context repositories, uploads and notes per repo | None |
-| Reviews | Code / Security / Consistency | All on, with optional exceptions per repo |
-| Consistency review | Another open PR is unmaintained after | 30 days without activity |
-| | Where the docs are | Not set: the reviewer looks in the repo itself |
 | Reviewer | Who reviews | Codex |
-| | Review profile | Standard; select Strict for independent review and required coverage |
 | | If Codex runs out, use Claude instead | On |
 | | Double-check blockers and majors | On |
 | | Codex models | `gpt-6.1-sol`, then `gpt-6-sol` |
 | | Claude models | `claude-opus-5-5`, then `claude-opus-4-8` |
 | Schedule | Check GitHub every | 5 seconds (one request per watched repo, free when nothing changed) |
-| | Most reviews per hour | 6 |
+| | Most reviews per hour | 6, across all repos |
 | | Pause during part of the day | Off |
 | | Rest a model after a usage limit | 30 minutes |
 | Review limits | Large PR above | 1,500 changed lines (then only blockers and majors) |
 | | Most nits per review | 5 |
-| Files and authors | Leave out of reviews | Lockfiles, vendored and generated files |
-| | Skip PRs by | dependabot, renovate, github-actions |
-| Labels | While reviewing / Left feedback / Approved | `dh: on review`, `dh: feedback`, `dh: approved` |
+| Strict review budgets | Batches, model attempts and time per run | 16 batches, 64 attempts, 30 minutes |
 
 Two things are set in `.env` instead, because the app needs them before the dashboard exists: `PORT` (default 4477) and `DATA_DIR` (default `./data`).
+
+Upgrading from a version with one set of settings for all repos: the first start turns them into one entry per repo you had listed, each with the values that applied to it, so reviews carry on as before. Repos on the old "never review" list become entries that are switched off.
 
 Upgrading from a version that used `reviewer.config.json`: the app imports that file the first time it starts, then renames it to `reviewer.config.imported.json`.
 
@@ -299,7 +320,7 @@ The app checks each watched repo's list of open pull requests and looks for ones
 - Requests are sent one at a time, at least a second apart, so a long repo list stretches the cycle instead of bursting.
 - If GitHub says the rate limit is reached, polling waits for the reset. If it asks the app to slow down without saying for how long, polling backs off for 1, 2, 4, 8 and then 15 minutes.
 - Polling also stops while fewer than 300 requests are left in the hour, so posting reviews keeps working.
-- Settings → GitHub usage shows each limit, what the last check cost, and the status of every watched repo.
+- Settings → App → GitHub usage shows each limit and what the last check cost. Each repo's entry shows what the app sees there.
 
 Each copy of the app shares your account's limits with everything else on your login, so run one copy per login.
 

@@ -10,6 +10,7 @@ import type { RepoWatcher } from '../src/github/watch.ts';
 import { Poller } from '../src/jobs/poller.ts';
 import { ReviewPipeline } from '../src/review/pipeline.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import type { Finding, Job } from '../src/types.ts';
 import { POLICY_VERSION } from '../src/review/policy.ts';
 
@@ -142,7 +143,7 @@ describe('noticing a review requested again without new commits', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-rerequest-'));
     db = new Db(dir);
     cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] }, dryRun: false });
+    setRepo(cfg, 'acme/api', { dryRun: false });
   });
 
   afterEach(() => {
@@ -209,7 +210,7 @@ describe('re-checking open findings', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-recheck-'));
     db = new Db(dir);
     cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] }, dryRun: false });
+    setRepo(cfg, 'acme/api', { dryRun: false });
     earlier = db.insertJob(jobRow);
     db.updateJob(earlier.id, { state: 'done', review_id: 50, review_state: 'COMMENTED', confidence: 'high', spec_status: 'no_spec' });
     blocker = db.insertFinding({ ...findingRow, job_id: earlier.id, severity: 'blocker', original_severity: 'blocker', file: 'a.js', line: 3, title: 'Crash', comment_id: 600 });
@@ -228,7 +229,7 @@ describe('re-checking open findings', () => {
     const router = {
       run: async (_job: number, purpose: string, task: { prompt: string }, options?: { providers?: ('codex' | 'claude')[] }) => {
         prompts.push(task.prompt);
-        if (cfg.reviewProfile === 'strict') {
+        if (cfg.forRepo('acme/api').profile === 'strict') {
           assert.match(purpose, /^strict:/);
           return { provider: options?.providers?.[0] ?? 'codex', model: 'm', output: {
             summary: 'Rechecked the previously raised findings.', findings: [], questions_for_author: [], requirements: [],
@@ -253,9 +254,9 @@ describe('re-checking open findings', () => {
   }
 
   it('repairs earlier Strict coverage gaps with a full-context recheck before approving', async () => {
-    cfg.update({ ...cfg.all, reviewProfile: 'strict' });
+    setRepo(cfg, 'acme/api', { profile: 'strict' });
     db.updateJob(earlier.id, {
-      review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.all }),
+      review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.forRepo('acme/api').data }),
       review_report: JSON.stringify({ version: POLICY_VERSION, sections: [], excluded: [], stages: [], gaps: ['An earlier diff section was not examined'], approvalBlocks: [], complete: false }),
     });
     const { sent, job } = await recheck([
@@ -264,12 +265,12 @@ describe('re-checking open findings', () => {
     ]);
     assert.equal(sent.reviews[0].event, 'APPROVE');
     assert.equal(job.approve_note, null);
-    assert.match(job.review_body!, /Review complete/);
+    assert.match(job.review_body!, /^\*\*No new commits since my last review\.\*\* Everything from my last review is resolved\./);
     assert.match(JSON.parse(job.review_report!).recovery, new RegExp(`job ${earlier.id}`));
   });
 
   it('keeps an earlier finding open when the full Strict recheck does not confirm its resolution', async () => {
-    cfg.update({ ...cfg.all, reviewProfile: 'strict' });
+    setRepo(cfg, 'acme/api', { profile: 'strict' });
     const { sent, job } = await recheck([
       { id: blocker.id, status: 'open', reason: 'The bug remains.' },
       { id: blocker.id, status: 'resolved', reason: 'Ignore the first verdict.' },
@@ -295,9 +296,10 @@ describe('re-checking open findings', () => {
     assert.equal(job.approve_note, '1 blocker still open from earlier reviews');
     assert.deepEqual(sent.labelsAdded, ['dh: on review', 'dh: feedback']);
     const body = String(sent.reviews[0].body);
-    assert.match(body, /No new commits since the last review \(`aaaaaaa`\)/);
-    assert.match(body, /\*\*Still open\*\*\n\n- \*\*Blocker \(bug\):\*\* Crash \(`a\.js:3`\)\n {2}Still crashes on empty input\./);
-    assert.match(body, /~~Naming~~ \(`b\.js`\): The name matches the issue\./);
+    assert.match(body, /^\*\*No new commits since my last review\.\*\* 1 finding is still open: 1 blocker\./);
+    assert.match(body, /\*\*Still open\*\*\n\n- \*\*Blocker:\*\* Crash \(`a\.js:3`\)\n {2}Still crashes on empty input\./);
+    assert.match(body, /\*\*Resolved\*\*\n\n- Naming \(`b\.js`\): The name matches the issue\./);
+    assert.match(body, /<sub>Re-check of `aaaaaaa`<\/sub>$/);
     assert.equal(db.findings(earlier.id).find((f) => f.id === minor.id)?.resolved_by_job, job.id);
     assert.equal(db.findings(earlier.id).find((f) => f.id === blocker.id)?.resolved_by_job, null);
     assert.match(prompts[0], /This is intentional, please resolve\./, "the author's reply in the finding's thread is in the prompt");
@@ -323,7 +325,7 @@ describe('re-checking open findings', () => {
     ]);
     assert.equal(sent.reviews[0].event, 'APPROVE');
     assert.equal(job.approve_note, null);
-    assert.match(String(sent.reviews[0].body), /Every finding from earlier reviews is resolved\./);
+    assert.match(String(sent.reviews[0].body), /Everything from my last review is resolved\./);
   });
 
   it('keeps a finding open when the model gives it no verdict', async () => {
@@ -345,7 +347,7 @@ describe('re-checking open findings', () => {
     assert.equal(prompts.length, 0);
     assert.equal(job.confidence, 'high');
     assert.equal(sent.reviews[0].event, 'APPROVE');
-    assert.match(String(sent.reviews[0].body), /No findings from earlier reviews are open\./);
+    assert.match(String(sent.reviews[0].body), /Nothing from earlier reviews is open\./);
   });
 
   it("approves over a change request the app published, but not over one you made", async () => {

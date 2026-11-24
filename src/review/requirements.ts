@@ -1,13 +1,14 @@
 import type { LinkedIssue } from '../github/prs.ts';
 import type { StrictReviewOut } from './schema.ts';
 
-type Requirement = StrictReviewOut['requirements'][number];
+// promised may be missing from answers saved before it existed; they count.
+type Requirement = Omit<StrictReviewOut['requirements'][number], 'promised'> & { promised?: boolean };
 export const criterionKey = (r: Requirement) => `${r.ref.toLowerCase()}:${r.criterion.trim().replace(/\s+/g, ' ').toLowerCase()}`;
 const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
 
 // Context-document IDs identify provenance; requirements belong to their parent issue.
 // Resolve only known issues and real comment ordinals, never by stripping arbitrary suffixes.
-export function canonicalRequirements(issues: LinkedIssue[], requirements: Requirement[]): Requirement[] {
+export function canonicalRequirements<R extends Requirement>(issues: LinkedIssue[], requirements: R[]): R[] {
   return requirements.map((r) => {
     const supplied = r.ref.trim().replace(/^issue:/i, '');
     const issue = issues.find((i) => {
@@ -21,12 +22,22 @@ export function canonicalRequirements(issues: LinkedIssue[], requirements: Requi
   });
 }
 
+const issueOf = (issues: LinkedIssue[], ref: string) => issues.find((i) => `${i.repo}#${i.number}`.toLowerCase() === ref.toLowerCase());
+
+// A closing issue is the PR's whole promise. A mentioned issue is context: only the criteria
+// the PR takes on from it count, by either reviewer's reading.
+export function counts(issue: LinkedIssue, r: Requirement, independent: Requirement[] = []): boolean {
+  return issue.linkedBy === 'closes' || r.promised !== false || independent.some((e) => criterionKey(e) === criterionKey(r) && e.promised !== false);
+}
+
 export function requirementAssessmentGaps(issues: LinkedIssue[], requirements: Requirement[], terminal: boolean): string[] {
   const gaps: string[] = [];
   for (const r of requirements) {
-    if (!issues.some((i) => `${i.repo}#${i.number}`.toLowerCase() === r.ref.toLowerCase())) gaps.push(`Unknown issue ref ${r.ref}; use an exact parent issue ref from the manifest`);
+    const issue = issueOf(issues, r.ref);
+    if (!issue) gaps.push(`Unknown issue ref ${r.ref}; use an exact parent issue ref from the manifest`);
     if (requirements.filter((other) => criterionKey(other) === criterionKey(r)).length > 1) gaps.push(`Duplicate assessment for ${r.ref}: ${r.criterion}; return one consolidated verdict`);
-    if (terminal && r.status === 'not_checked') gaps.push(`Unfinished assessment for ${r.ref}: ${r.criterion}; inspect the source and code and return a final status`);
+    // Criteria of a mentioned issue that the PR doesn't take on needn't be finished.
+    if (terminal && r.status === 'not_checked' && (!issue || counts(issue, r))) gaps.push(`Unfinished assessment for ${r.ref}: ${r.criterion}; inspect the source and code and return a final status`);
   }
   if (terminal) for (const i of issues) {
     const ref = `${i.repo}#${i.number}`;
@@ -43,6 +54,7 @@ export function requirementBlocks(issues: LinkedIssue[], final: Requirement[], i
     if (!entries.length) { blocks.push(`Requirement ${ref} has no completed scope assessment`); continue; }
     const source = normalize(`${issue.title}\n${issue.body}\n${issue.comments.map((c) => c.body).join('\n')}`);
     for (const r of entries) {
+      if (!counts(issue, r, independent)) continue;
       const label = `Requirement ${ref}: ${r.criterion}`;
       if (!r.criterion.trim() || !source.includes(normalize(r.criterion)) || !r.reason.trim()) {
         blocks.push(`${label} lacks a source-backed criterion and reason`); continue;

@@ -134,7 +134,7 @@ export class Poller {
       // Only for repos checked successfully just now: a failed check says nothing.
       for (const job of this.db.all<Job>(`SELECT * FROM jobs WHERE source = 'request' AND state IN ('queued', 'running', 'waiting')`)) {
         if (!this.cfg.isRepoAllowed(job.repo)) {
-          this.worker.cancel(job.id, 'repo removed from your list', 'obsolete');
+          this.worker.cancel(job.id, 'repo removed from your list or switched off', 'obsolete');
         } else if (polled.has(job.repo.toLowerCase()) && !requestedKeys.has(`${job.repo}#${job.pr_number}`.toLowerCase())) {
           this.worker.cancel(job.id, 'review request removed or PR closed', 'request-removed');
         }
@@ -198,9 +198,9 @@ export class Poller {
       base_sha: pr.baseSha,
       since_sha: pr.headSha,
       kind: 'recheck',
-      mode: this.cfg.modeFor(pr.repo),
+      mode: this.cfg.forRepo(pr.repo).mode,
       source,
-      dry_run: this.cfg.dryRun ? 1 : 0,
+      dry_run: this.cfg.forRepo(pr.repo).dryRun ? 1 : 0,
       state: 'queued',
       additions: pr.additions,
       deletions: pr.deletions,
@@ -217,7 +217,7 @@ export class Poller {
   async recheckFromDashboard(id: number): Promise<Job> {
     const done = this.db.job(id);
     if (!done || done.state !== 'done') throw new Error('Only finished reviews can be re-checked');
-    if (!this.cfg.isRepoAllowed(done.repo)) throw new Error('This repo is no longer in your repos list');
+    if (!this.cfg.isRepoAllowed(done.repo)) throw new Error('This repo is no longer in your repos list, or is switched off, or is switched off');
     if (this.db.jobsForPr(done.repo, done.pr_number).some((j) => ACTIVE_STATES.includes(j.state))) {
       throw new Error('This PR already has a review queued or running');
     }
@@ -231,15 +231,15 @@ export class Poller {
   async fullReviewFromDashboard(id: number): Promise<Job> {
     const previous = this.db.job(id);
     if (!previous || ACTIVE_STATES.includes(previous.state)) throw new Error('Finish or cancel the current job before requesting a full review');
-    if (!this.cfg.isRepoAllowed(previous.repo)) throw new Error('This repo is no longer in your repos list');
+    if (!this.cfg.isRepoAllowed(previous.repo)) throw new Error('This repo is no longer in your repos list, or is switched off, or is switched off');
     if (this.db.jobsForPr(previous.repo, previous.pr_number).some((j) => ACTIVE_STATES.includes(j.state))) throw new Error('This PR already has a review queued or running');
     const pr = await getPr(this.gh, previous.repo, previous.pr_number);
     if (pr.state !== 'open') throw new Error('This PR is no longer open');
     if (this.db.jobsForPr(previous.repo, previous.pr_number).some((j) => ACTIVE_STATES.includes(j.state))) throw new Error('This PR already has a review queued or running');
     const job = this.db.insertJob({
       repo: pr.repo, pr_number: pr.number, pr_title: pr.title, pr_url: pr.url, author: pr.author,
-      head_sha: pr.headSha, base_sha: pr.baseSha, since_sha: null, kind: 'audit', reviews: this.cfg.reviewsFor(pr.repo).join(','), mode: this.cfg.modeFor(pr.repo),
-      source: 'manual', dry_run: this.cfg.dryRun ? 1 : 0, state: 'queued', additions: pr.additions, deletions: pr.deletions, changed_files: pr.changedFiles,
+      head_sha: pr.headSha, base_sha: pr.baseSha, since_sha: null, kind: 'audit', reviews: this.cfg.forRepo(pr.repo).reviews.join(','), mode: this.cfg.forRepo(pr.repo).mode,
+      source: 'manual', dry_run: this.cfg.forRepo(pr.repo).dryRun ? 1 : 0, state: 'queued', additions: pr.additions, deletions: pr.deletions, changed_files: pr.changedFiles,
     });
     this.db.event(job.id, 'Full PR review requested from the dashboard; using the current review profile and budgets');
     return job;
@@ -273,10 +273,10 @@ export class Poller {
       author: pr.author,
       head_sha: pr.headSha,
       base_sha: pr.baseSha,
-      reviews: (reviews?.length ? reviews : this.cfg.reviewsFor(pr.repo)).join(','),
-      mode: this.cfg.modeFor(pr.repo),
+      reviews: (reviews?.length ? reviews : this.cfg.forRepo(pr.repo).reviews).join(','),
+      mode: this.cfg.forRepo(pr.repo).mode,
       source,
-      dry_run: this.cfg.dryRun ? 1 : 0,
+      dry_run: this.cfg.forRepo(pr.repo).dryRun ? 1 : 0,
       additions: pr.additions,
       deletions: pr.deletions,
       changed_files: pr.changedFiles,
@@ -284,7 +284,7 @@ export class Poller {
 
     // PRs you add from the dashboard always run, including your own (handy for testing).
     const author = pr.author.toLowerCase();
-    const skipped = author === this.gh.me.toLowerCase() || this.cfg.skipAuthors.some((a) => a.toLowerCase() === author);
+    const skipped = author === this.gh.me.toLowerCase() || this.cfg.forRepo(pr.repo).skipAuthors.some((a) => a.toLowerCase() === author);
     if (source === 'request' && skipped) {
       return this.db.insertJob({ ...base, since_sha: null, state: 'skipped', skip_reason: `author ${pr.author} is on the skip list` });
     }

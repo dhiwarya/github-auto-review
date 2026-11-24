@@ -57,7 +57,7 @@ export class OutcomeSync {
       this.db.updateJob(job.id, { review_state: 'DELETED' });
       for (const f of findings) this.db.updateFinding(f.id, { outcome: 'deleted' });
       this.db.event(job.id, 'You discarded the draft review');
-      await removeLabel(this.gh, job.repo, job.pr_number, this.cfg.labels.reviewing);
+      await removeLabel(this.gh, job.repo, job.pr_number, this.cfg.forRepo(job.repo).labels.reviewing);
       return;
     }
     if (review.state === 'PENDING') return;
@@ -80,7 +80,7 @@ export class OutcomeSync {
     this.db.event(job.id, `You submitted the review (${review.state.toLowerCase()})${findings.length ? `: kept ${kept} of ${findings.length} finding(s)` : ''}`);
 
     const pr = await getPr(this.gh, job.repo, job.pr_number);
-    await showLabel(this.gh, job.repo, job.pr_number, this.cfg.labels, review.state === 'APPROVED' ? 'approved' : 'feedback', pr.labels);
+    await showLabel(this.gh, job.repo, job.pr_number, this.cfg.forRepo(job.repo).labels, review.state === 'APPROVED' ? 'approved' : 'feedback', pr.labels);
   }
 
   private outcomeFor(f: Finding, byFinding: Map<number, string>, byCommentId: Map<number, string>, reviewBody: string): Finding['outcome'] {

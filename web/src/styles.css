@@ -1321,3 +1321,101 @@ textarea {
   flex-direction: column;
   gap: 4px;
 }
+
+/* Settings: the two parts, and the list of repos */
+
+.subtabs {
+  display: flex;
+  gap: 22px;
+  padding-bottom: 12px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+.subtabs a {
+  color: var(--muted);
+  text-decoration: none;
+}
+.subtabs a:hover {
+  color: var(--text);
+}
+.subtabs a.active {
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 16px;
+}
+.subtabs + .settings-section {
+  padding-top: 0;
+  border-top: 0;
+}
+.repo-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 32px;
+}
+.repo-picker h2 {
+  margin: 0;
+}
+.repo-picker > .row {
+  align-items: flex-start;
+  gap: 16px;
+}
+.repo-picker .btn {
+  flex: none;
+}
+.repo-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.repo-row {
+  display: flex;
+  align-items: baseline;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  padding: 11px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.repo-row:first-child {
+  border-top: 0;
+}
+.repo-row:hover {
+  background: var(--subtle);
+}
+.repo-row.active {
+  background: var(--text);
+  color: var(--bg);
+}
+.repo-row.active .muted,
+.repo-row.active .error {
+  color: inherit;
+  opacity: 0.75;
+}
+.repo-name {
+  font-family: var(--mono);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.repo-form {
+  border-top: 1px solid var(--line);
+  padding-top: 32px;
+}
+.repo-form textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+.repo-form textarea[spellcheck='false'] {
+  font-family: var(--mono);
+  font-size: 13px;
+}

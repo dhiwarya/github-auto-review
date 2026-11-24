@@ -33,77 +33,48 @@ const providerModels = z.object({
   fallbackModels: z.array(z.string().trim().min(1)).default([]),
 });
 
-export const SettingsSchema = z.object({
-  reviewProfile: z.enum(['standard', 'strict']).default('standard'),
-  strict: z.object({
-    passTimeoutSec: int(60, 3600).default(1800),
-    maxDiffChars: int(10_000, 1_000_000).default(500_000),
-    claudeMaxTurns: int(5, 200).default(120),
-    claudeEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
-    maxBatches: int(1, 40).default(16),
-    maxRuns: int(3, 200).default(64),
-    maxContinuations: int(0, 4).default(2),
-    verificationReserve: int(1, 40).default(8),
-  }).prefault({}),
-  // Nothing outside this list is ever reviewed. Empty until you add repos in Settings.
-  repos: z
-    .object({
-      allow: z.array(repoPattern).default([]),
-      deny: z.array(repoPattern).default([]),
-    })
-    .prefault({}),
+// A context set's id names its baseline in the database. One is made up when a repo is added.
+const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+
+// Everything that is decided per repo. A repo is only reviewed when it has an entry here.
+export const RepoSchema = z.object({
+  // One repository, or a pattern such as owner/* for every repo it matches that has no
+  // entry of its own.
+  repo: repoPattern,
+  // Off: the entry and its context are kept, but its pull requests aren't reviewed.
+  enabled: z.boolean().default(true),
   // While true, reviews run but nothing is posted to GitHub and no labels change.
   dryRun: z.boolean().default(true),
-  defaultMode: mode.default('draft'),
-  // Per-repo mode overrides; the first matching pattern wins.
-  repoModes: z.array(z.object({ repo: repoPattern, mode })).default([]),
-  // The reviews every PR gets, with per-repo exceptions; the first matching pattern wins.
+  mode: mode.default('draft'),
+  profile: z.enum(['standard', 'strict']).default('standard'),
+  // The reviews every PR gets.
   reviews: z.object(reviewTypes).refine(atLeastOne, 'Turn on at least one review').prefault({}),
-  repoReviews: z.array(z.object({ repo: repoPattern, ...reviewTypes }).refine(atLeastOne, 'Turn on at least one review')).default([]),
-  consistency: z
+  // Approve the PR for you when a published review finds no open blockers and is
+  // confident enough. Drafts are never approved: you decide when you submit them.
+  approval: z
     .object({
-      // Another open PR with no activity for this long is treated as unmaintained: an
-      // overlap with it is still mentioned, but with low confidence.
-      stalePrDays: int(1, 3650).default(30),
-      // Where each repo's documentation lives, for the consistency review. Without an
-      // entry the reviewer looks for docs in the repo itself.
-      docs: z
-        .array(
-          z.object({
-            repo: repoPattern,
-            // Folders or files in the reviewed repo, e.g. docs/ or README.md.
-            paths: z.array(z.string().trim().min(1)).default([]),
-            // Another repository that holds the docs, checked out read-only next to the PR.
-            docsRepo: repoName.nullable().default(null),
-            // Anything else the reviewer should know about the docs, in your words.
-            notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
-          }),
-        )
-        .default([]),
+      enabled: z.boolean().default(true),
+      minConfidence: z.enum(['high', 'medium']).default('high'),
     })
     .prefault({}),
-  // Markdown that describes each repo, kept as a searchable graph ("baseline") and looked up
-  // for every review. It comes from context repositories and from files you upload.
-  context: z
-    .array(
-      z.object({
-        id: z.string().regex(/^[a-z0-9]{6,20}$/),
-        // The repos under review that it applies to; the first matching entry wins.
-        repo: repoPattern,
-        // Repositories whose markdown is the context, optionally one folder of each.
-        sources: z.array(z.object({ repo: repoName, path: z.string().trim().max(200).default('') })).default([]),
-        // Anything else every reviewer of these repos should know, in your words.
-        notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
-      }),
-    )
-    .superRefine((entries, ctx) => {
-      const seen = new Set<string>();
-      for (const [i, e] of entries.entries()) {
-        if (seen.has(e.id)) ctx.addIssue({ code: 'custom', path: [i, 'id'], message: 'Two entries share an id' });
-        seen.add(e.id);
+  // A PR carries one of these at a time. "reviewing" stays while your draft is unsubmitted.
+  labels: z
+    .object({
+      reviewing: labelName.default('dh: on review'),
+      feedback: labelName.default('dh: feedback'),
+      approved: labelName.default('dh: approved'),
+    })
+    .superRefine((labels, ctx) => {
+      // GitHub label names ignore case.
+      const seen = new Map<string, string>();
+      for (const kind of LABEL_KINDS) {
+        const key = labels[kind].toLowerCase();
+        const other = seen.get(key);
+        if (other) ctx.addIssue({ code: 'custom', path: [kind], message: `Same name as the ${other} label` });
+        else seen.set(key, kind);
       }
     })
-    .default([]),
+    .prefault({}),
   skipAuthors: z.array(z.string().trim().min(1)).default(['dependabot[bot]', 'renovate[bot]', 'github-actions[bot]']),
   excludeGlobs: z
     .array(z.string().trim().min(1))
@@ -119,6 +90,46 @@ export const SettingsSchema = z.object({
       '**/*.snap',
       '**/*.generated.*',
     ]),
+  // Another open PR with no activity for this long is treated as unmaintained: an
+  // overlap with it is still mentioned, but with low confidence.
+  stalePrDays: int(1, 3650).default(30),
+  // Where the docs live, for the consistency review. Left empty, the reviewer looks for
+  // docs in the repo itself.
+  docs: z
+    .object({
+      // Folders or files in the reviewed repo, e.g. docs/ or README.md.
+      paths: z.array(z.string().trim().min(1)).default([]),
+      // Another repository that holds the docs, checked out read-only next to the PR.
+      docsRepo: repoName.nullable().default(null),
+      // Anything else the reviewer should know about the docs, in your words.
+      notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
+    })
+    .prefault({}),
+  // Markdown that describes the repo, kept as a searchable graph ("baseline") and looked up
+  // for every review. It comes from context repositories and from files you upload.
+  context: z
+    .object({
+      id: z.string().regex(/^[a-z0-9]{6,20}$/).default(newId),
+      // Repositories whose markdown is the context, optionally one folder of each.
+      sources: z.array(z.object({ repo: repoName, path: z.string().trim().max(200).default('') })).default([]),
+      // Anything else every reviewer of this repo should know, in your words.
+      notes: z.string().trim().max(2000, 'Up to 2,000 characters').default(''),
+    })
+    .prefault({}),
+});
+
+// What the whole app shares: the reviewer's models and how much work it may do.
+const appShape = {
+  strict: z.object({
+    passTimeoutSec: int(60, 3600).default(1800),
+    maxDiffChars: int(10_000, 1_000_000).default(500_000),
+    claudeMaxTurns: int(5, 200).default(120),
+    claudeEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
+    maxBatches: int(1, 40).default(16),
+    maxRuns: int(3, 200).default(64),
+    maxContinuations: int(0, 4).default(2),
+    verificationReserve: int(1, 40).default(8),
+  }).prefault({}),
   models: z
     .object({
       // The one provider that does a whole review.
@@ -159,39 +170,37 @@ export const SettingsSchema = z.object({
       maxAttempts: int(1, 10).default(3),
     })
     .prefault({}),
-  // Approve the PR for you when a published review finds no open blockers and is
-  // confident enough. Drafts are never approved: you decide when you submit them.
-  approval: z
-    .object({
-      enabled: z.boolean().default(true),
-      minConfidence: z.enum(['high', 'medium']).default('high'),
-    })
-    .prefault({}),
-  // A PR carries one of these at a time. "reviewing" stays while your draft is unsubmitted.
-  labels: z
-    .object({
-      reviewing: labelName.default('dh: on review'),
-      feedback: labelName.default('dh: feedback'),
-      approved: labelName.default('dh: approved'),
-    })
-    .superRefine((labels, ctx) => {
-      // GitHub label names ignore case.
-      const seen = new Map<string, string>();
-      for (const kind of LABEL_KINDS) {
-        const key = labels[kind].toLowerCase();
-        const other = seen.get(key);
-        if (other) ctx.addIssue({ code: 'custom', path: [kind], message: `Same name as the ${other} label` });
-        else seen.set(key, kind);
-      }
-    })
-    .prefault({}),
   // Keep each PR checkout after its review, for debugging.
   keepCheckouts: z.boolean().default(false),
+};
+
+export const SettingsSchema = z.object({
+  // Nothing outside this list is ever reviewed. Empty until you add repos in Settings.
+  repos: z
+    .array(RepoSchema)
+    .superRefine((repos, ctx) => {
+      const names = new Set<string>();
+      const ids = new Set<string>();
+      for (const [i, r] of repos.entries()) {
+        if (names.has(r.repo.toLowerCase())) ctx.addIssue({ code: 'custom', path: [i, 'repo'], message: 'This repo is listed twice' });
+        names.add(r.repo.toLowerCase());
+        if (ids.has(r.context.id)) ctx.addIssue({ code: 'custom', path: [i, 'context', 'id'], message: 'Two repos share a context id' });
+        ids.add(r.context.id);
+      }
+    })
+    .default([]),
+  ...appShape,
 });
 
+// One repo's settings together with the app's: what a review of that repo runs with. A
+// job keeps a copy from when it started, so a later change doesn't alter it halfway.
+export const RepoSettingsSchema = z.object({ ...RepoSchema.shape, ...appShape });
+
 export type Settings = z.infer<typeof SettingsSchema>;
+export type RepoConfig = z.infer<typeof RepoSchema>;
+export type RepoSettingsData = z.infer<typeof RepoSettingsSchema>;
 
 export interface SettingsIssue {
-  path: string; // e.g. "repos.allow.0"
+  path: string; // e.g. "repos.0.labels.reviewing"
   message: string;
 }

@@ -71,7 +71,7 @@ export class RepoWatcher {
 
   // Exact entries are watched directly; patterns are expanded from the repos you can access.
   async watchedRepos(): Promise<string[]> {
-    const allow = this.cfg.repos.allow;
+    const allow = this.cfg.repos.filter((r) => r.enabled).map((r) => r.repo);
     const exact = allow.filter((p) => !isPattern(p));
     const patterns = allow.filter(isPattern);
     let fromPatterns: string[] = [];

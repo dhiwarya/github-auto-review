@@ -5,7 +5,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { Db } from '../src/db.ts';
 import type { GitHub } from '../src/github/client.ts';
-import { SettingsStore } from '../src/settings.ts';
+import { SettingsStore, type RepoSettings } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import { NoProviderAvailable } from '../src/llm/router.ts';
 import type { RouterTask } from '../src/llm/router.ts';
 import { ReviewPipeline } from '../src/review/pipeline.ts';
@@ -17,7 +18,7 @@ describe('Strict pipeline integration', () => {
   let dir: string; let db: Db; let cfg: SettingsStore;
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-strict-pipeline-')); db = new Db(dir); cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, reviewProfile: 'strict', repos: { allow: ['acme/api'], deny: [] }, dryRun: false, defaultMode: 'publish' });
+    setRepo(cfg, 'acme/api', { profile: 'strict', dryRun: false, mode: 'publish' });
     fs.writeFileSync(path.join(dir, 'a.js'), 'const limit = 0;\n');
   });
   afterEach(() => { db.sql.close(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -53,9 +54,9 @@ describe('Strict pipeline integration', () => {
       mergeBase: async () => 'b'.repeat(40), history: async () => [], readFile: async () => null,
       hasCommit: async () => true, isAncestor: async () => true, diffFiles: async () => { deltaReads++; return [file]; },
     };
-    const router = { run: async (id: number, purpose: string, task: RouterTask, options: { providers: ('codex' | 'claude')[]; config: SettingsStore }) => {
+    const router = { run: async (id: number, purpose: string, task: RouterTask, options: { providers: ('codex' | 'claude')[]; config: RepoSettings }) => {
       calls.push(purpose);
-      assert.equal(options.config.reviewProfile, 'strict'); assert.equal(options.config.limits.passTimeoutSec, 1800);
+      assert.equal(options.config.profile, 'strict'); assert.equal(options.config.limits.passTimeoutSec, 1800);
       assert.equal(options.config.limits.claudeMaxTurns, 120); assert.equal(options.config.models.claudeEffort, 'high');
       if (purpose.startsWith('strict:adversarial:') && opts.unavailable?.()) throw new NoProviderAvailable(new Date(Date.now() + 60000));
       const idMatch = /"id":(\d+)/.exec(task.prompt);
@@ -88,7 +89,9 @@ describe('Strict pipeline integration', () => {
     assert.equal(done.state, 'done'); assert.equal(reviews[0].event, 'APPROVE');
     assert.equal(done.confidence, 'high'); assert.equal(done.spec_status, 'no_spec', 'requirements come from the Strict checklist');
     assert.doesNotMatch(reviews[0].body, /Covers .* only|Auto Reviewer/);
-    assert.match(reviews[0].body, /\*\*Approval checks passed\.\*\*\n\n<!-- ai-review /, 'the verdict sits just above the hidden marker');
+    assert.match(reviews[0].body, /^\*\*Approved\.\*\* Nothing blocking\./, 'the verdict opens the comment');
+    assert.match(reviews[0].body, /<sub>Strict code, security and consistency review of `[0-9a-f]{7}`<\/sub>$/);
+    assert.doesNotMatch(reviews[0].body, /Approval|Review complete/);
   });
   it('leaves the consistency extras out of a Strict review when they are switched off', async () => {
     const { job, pipeline, reviews, calls } = fixture();
@@ -100,15 +103,16 @@ describe('Strict pipeline integration', () => {
     const { job, pipeline, reviews } = fixture({ concern: true, uncertain: true });
     await pipeline.run(job, new AbortController().signal);
     assert.equal(reviews[0].event, 'COMMENT'); assert.equal(reviews[0].comments?.length ?? 0, 0);
-    assert.match(reviews[0].body, /Unverified concern/);
+    assert.match(reviews[0].body, /\*\*Needs changes\.\*\* 1 major\./);
+    assert.match(reviews[0].body, /\*\*Needs fixing\*\*\n\n- \*\*Major \(not verified\):\*\*/);
     const f = db.findings(job.id)[0]; assert.equal(f.severity, 'major'); assert.equal(f.status, 'summary');
     assert.match(db.job(job.id)!.approve_note!, /unresolved serious verification/);
   });
   it('retains explicit gaps and refuses automatic posting when high confidence lacks coverage', async () => {
     const { job, pipeline, reviews } = fixture({ missingCoverage: true });
     await assert.rejects(pipeline.run(job, new AbortController().signal), StrictReviewIncomplete);
-    assert.equal(reviews.length, 0); assert.match(db.job(job.id)!.review_body!, /Review incomplete/);
-    assert.doesNotMatch(db.job(job.id)!.review_body!, /\*\*No issues found/);
+    assert.equal(reviews.length, 0); assert.match(db.job(job.id)!.review_body!, /^\*\*Partial review\.\*\*/);
+    assert.doesNotMatch(db.job(job.id)!.review_body!, /No issues found|Coverage gaps/);
     assert.equal(db.job(job.id)!.confidence, 'low'); assert.equal(JSON.parse(db.job(job.id)!.review_report!).complete, false);
   });
   it('requires an explicit manual partial-post choice after bounded recovery fails', async () => {
@@ -120,20 +124,20 @@ describe('Strict pipeline integration', () => {
     assert.equal(reviews.length, 0);
     await pipeline.postDryRun(job.id, 'publish', true);
     assert.equal(reviews[0].event, 'COMMENT');
-    assert.match(reviews[0].body, /Review incomplete/); assert.match(reviews[0].body, /Approval withheld/);
-    assert.doesNotMatch(reviews[0].body, /\*\*No issues found/);
+    assert.match(reviews[0].body, /^\*\*Partial review\.\*\*/); assert.match(reviews[0].body, /Some parts weren't checked<\/sub>$/);
+    assert.doesNotMatch(reviews[0].body, /No issues found|Approval withheld/);
   });
   it('finishes recoverable coverage before publishing, without repeating successful passes', async () => {
     const { job, pipeline, reviews, calls } = fixture({ recoverCoverage: true });
     await pipeline.run(job, new AbortController().signal);
     assert.equal(reviews[0].event, 'APPROVE'); assert.equal(calls.length, 4);
     assert.equal(calls.filter((p) => p.startsWith('strict:main:')).length, 1);
-    assert.match(reviews[0].body, /Review complete/); assert.doesNotMatch(reviews[0].body, /Review incomplete/);
+    assert.match(reviews[0].body, /^\*\*Approved\.\*\*/); assert.doesNotMatch(reviews[0].body, /Partial review/);
   });
   it('automatically expands a follow-up with an incomplete baseline to one full PR review', async () => {
     const f = fixture();
     const baseline = db.insertJob({ ...db.job(f.job.id)!, head_sha: 'c'.repeat(40), state: 'done' });
-    db.updateJob(baseline.id, { confidence: 'low', review_policy: JSON.stringify({ version: 1, settings: cfg.all }), review_report: JSON.stringify({ version: 1, complete: false, stages: [], gaps: ['Old context was clipped'], approvalBlocks: [] }) });
+    db.updateJob(baseline.id, { confidence: 'low', review_policy: JSON.stringify({ version: 1, settings: cfg.forRepo('acme/api').data }), review_report: JSON.stringify({ version: 1, complete: false, stages: [], gaps: ['Old context was clipped'], approvalBlocks: [] }) });
     const followup = db.updateJob(f.job.id, { since_sha: baseline.head_sha });
     await f.pipeline.run(followup, new AbortController().signal);
     assert.equal(f.deltaReads(), 0); assert.equal(db.job(f.job.id)!.since_sha, null);
@@ -144,7 +148,7 @@ describe('Strict pipeline integration', () => {
   it('retains incremental review against a complete baseline even with an earlier open major', async () => {
     const f = fixture();
     const baseline = db.insertJob({ ...db.job(f.job.id)!, head_sha: 'c'.repeat(40), state: 'done' });
-    db.updateJob(baseline.id, { confidence: 'medium', review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.all }), review_report: JSON.stringify({ version: POLICY_VERSION, complete: true, sections: [], excluded: [], stages: ['main/batch-1', 'security/batch-1', 'adversarial/batch-1'].map((purpose) => ({ key: purpose, purpose, state: 'done', coverage: [], provider: 'codex', model: 'm', error: null })), gaps: [], approvalBlocks: [] }) });
+    db.updateJob(baseline.id, { confidence: 'medium', review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.forRepo('acme/api').data }), review_report: JSON.stringify({ version: POLICY_VERSION, complete: true, sections: [], excluded: [], stages: ['main/batch-1', 'security/batch-1', 'adversarial/batch-1'].map((purpose) => ({ key: purpose, purpose, state: 'done', coverage: [], provider: 'codex', model: 'm', error: null })), gaps: [], approvalBlocks: [] }) });
     db.insertFinding({ job_id: baseline.id, pass: 'main', model: 'codex', model_id: 'm', category: 'bug', severity: 'major', original_severity: 'major', confidence: 'high', file: 'a.js', line: 1, title: 'Earlier major', evidence: 'const limit = 0;', problem: 'The bug remains.', suggestion: 'Fix it.', verification: 'confirmed', verified_by: 'claude', verify_reason: 'Read a.js', status: 'summary', drop_reason: null, comment_id: null, outcome: 'published' });
     await f.pipeline.run(db.updateJob(f.job.id, { since_sha: baseline.head_sha }), new AbortController().signal);
     assert.equal(f.deltaReads(), 1); assert.equal(db.job(f.job.id)!.since_sha, baseline.head_sha);
@@ -154,7 +158,7 @@ describe('Strict pipeline integration', () => {
   it('reassesses earlier code uncertainty instead of losing unresolved questions on a follow-up', async () => {
     const f = fixture();
     const baseline = db.insertJob({ ...db.job(f.job.id)!, head_sha: 'c'.repeat(40), state: 'done' });
-    db.updateJob(baseline.id, { confidence: 'medium', review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.all }), review_report: JSON.stringify({ version: POLICY_VERSION, complete: true, sections: [], excluded: [], stages: ['main/batch-1', 'security/batch-1', 'adversarial/batch-1'].map((purpose) => ({ key: purpose, purpose, state: 'done', coverage: [], provider: 'codex', model: 'm', error: null })), gaps: [], approvalBlocks: ['Unresolved questions affect review confidence'] }) });
+    db.updateJob(baseline.id, { confidence: 'medium', review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.forRepo('acme/api').data }), review_report: JSON.stringify({ version: POLICY_VERSION, complete: true, sections: [], excluded: [], stages: ['main/batch-1', 'security/batch-1', 'adversarial/batch-1'].map((purpose) => ({ key: purpose, purpose, state: 'done', coverage: [], provider: 'codex', model: 'm', error: null })), gaps: [], approvalBlocks: ['Unresolved questions affect review confidence'] }) });
     db.updateJob(baseline.id, { review_body: '**Questions**\nDoes production enforce request idempotency?' });
     await f.pipeline.run(db.updateJob(f.job.id, { since_sha: baseline.head_sha }), new AbortController().signal);
     assert.equal(f.deltaReads(), 0);
@@ -163,7 +167,7 @@ describe('Strict pipeline integration', () => {
   });
   it('upgrades an unposted old-policy job and rebuilds full coverage instead of publishing its prepared body', async () => {
     const f = fixture();
-    const old = db.updateJob(f.job.id, { review_policy: JSON.stringify({ version: 1, settings: cfg.all }), review_report: JSON.stringify({ version: 1, complete: true, stages: [], gaps: [], approvalBlocks: [] }), review_body: 'OLD_PREPARED_REVIEW' });
+    const old = db.updateJob(f.job.id, { review_policy: JSON.stringify({ version: 1, settings: cfg.forRepo('acme/api').data }), review_report: JSON.stringify({ version: 1, complete: true, stages: [], gaps: [], approvalBlocks: [] }), review_body: 'OLD_PREPARED_REVIEW' });
     await f.pipeline.run(old, new AbortController().signal);
     assert.equal(f.calls.length, 3); assert.doesNotMatch(f.reviews[0].body, /OLD_PREPARED/);
     const policy = JSON.parse(db.job(f.job.id)!.review_policy!);

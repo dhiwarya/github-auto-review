@@ -5,6 +5,7 @@ import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 import { bus } from '../bus.ts';
 import { SettingsStore } from '../settings.ts';
+import { RepoSchema } from '../settings-schema.ts';
 import { queryTerms } from '../context/query.ts';
 import type { ContextStore } from '../context/store.ts';
 import type { Db } from '../db.ts';
@@ -48,10 +49,9 @@ export function overview({ cfg, db, gh, router, worker, poller }: Deps): Overvie
   return {
     me: gh.me,
     github_auth: gh.authSource,
-    settings: { reviews: REVIEW_TYPES.filter((r) => cfg.reviews[r]), profile: cfg.reviewProfile, provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
+    settings: { provider: cfg.models.provider, fallbackToOther: cfg.models.fallbackToOther, doubleCheck: cfg.models.doubleCheck },
+    repos: cfg.repos.map((r) => ({ repo: r.repo, enabled: r.enabled, dryRun: r.dryRun, mode: r.mode, profile: r.profile, reviews: REVIEW_TYPES.filter((t) => r.reviews[t]) })),
     needs_setup: cfg.needsSetup,
-    dry_run: cfg.dryRun,
-    default_mode: cfg.defaultMode,
     counts,
     last_poll_at: db.getKv('last_poll_at'),
     next_poll_at: db.getKv('next_poll_at'),
@@ -121,7 +121,7 @@ export async function startServer(deps: Deps) {
     const asked = req.body?.reviews;
     const reviews = Array.isArray(asked) ? REVIEW_TYPES.filter((r) => asked.includes(r)) : undefined;
     if (reviews && !reviews.length) return reply.code(400).send({ error: 'Pick at least one review' });
-    if (!cfg.isRepoAllowed(ref.repo)) return reply.code(400).send({ error: `${ref.repo} isn't in your repos list (Settings → Repositories)` });
+    if (!cfg.isRepoAllowed(ref.repo)) return reply.code(400).send({ error: cfg.entryFor(ref.repo) ? `Reviews are switched off for ${ref.repo} in Settings` : `${ref.repo} isn't in your repos list (add it in Settings)` });
     try {
       const pr = await getPr(gh, ref.repo, ref.number);
       if (pr.state !== 'open') return reply.code(400).send({ error: 'That PR is not open' });
@@ -187,21 +187,22 @@ export async function startServer(deps: Deps) {
 
   // All settings, edited from the dashboard. A save is validated as a whole, stored in the
   // database, and applies to the running app straight away.
-  app.get('/api/settings', async () => ({ settings: cfg.all, defaults: SettingsStore.defaults() }));
+  // `newRepo` is a repo entry as it starts out, for the dashboard's "Add repository".
+  app.get('/api/settings', async () => ({ settings: cfg.all, defaults: SettingsStore.defaults(), newRepo: RepoSchema.parse({ repo: 'owner/repo' }) }));
 
   app.put<{ Body: unknown }>('/api/settings', async (req, reply) => {
     const result = cfg.update(req.body);
     if (!result.ok) return reply.code(400).send({ error: 'Some settings need fixing', issues: result.issues });
     console.log('[settings] saved');
-    deps.context.prune(cfg.context.map((c) => c.id));
+    deps.context.prune(cfg.contextSets.map((c) => c.id));
     return { settings: result.settings };
   });
 
   // Repo context: the markdown baseline each review looks things up in.
-  const contextEntry = (id: string) => cfg.context.find((c) => c.id === id);
+  const contextEntry = (id: string) => cfg.contextSets.find((c) => c.id === id);
   const failed = (err: unknown) => ({ error: err instanceof Error ? err.message.split('\n')[0] : String(err) });
 
-  app.get('/api/context', async () => ({ sets: cfg.context.map((c) => ({ id: c.id, status: deps.context.status(c.id) })) }));
+  app.get('/api/context', async () => ({ sets: cfg.contextSets.map((c) => ({ id: c.id, repo: c.repo, status: deps.context.status(c.id) })) }));
 
   // Builds the baseline now: fetches the context repositories and re-reads what changed.
   app.post<{ Params: { id: string } }>('/api/context/:id/baseline', async (req, reply) => {

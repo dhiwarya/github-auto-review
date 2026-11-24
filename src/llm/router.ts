@@ -1,4 +1,4 @@
-import type { SettingsStore } from '../settings.ts';
+import type { RepoSettings, SettingsStore } from '../settings.ts';
 import type { Db } from '../db.ts';
 import type { ModelStatus, Provider, ProviderStatus } from '../types.ts';
 import { randomUUID } from 'node:crypto';
@@ -95,7 +95,7 @@ export class Router {
 
   // Every model run of a review goes through here: the chosen provider's models first,
   // then (if falling back is on) the other provider's.
-  async run(jobId: number, purpose: string, task: RouterTask, options: { providers?: Provider[]; config?: SettingsStore; maxJobRuns?: number } = {}): Promise<{ provider: Provider; model: string | null; output: unknown }> {
+  async run(jobId: number, purpose: string, task: RouterTask, options: { providers?: Provider[]; config?: RepoSettings; maxJobRuns?: number } = {}): Promise<{ provider: Provider; model: string | null; output: unknown }> {
     const cfg = options.config ?? this.cfg;
     const providers = options.providers ?? cfg.providerOrder();
     const preferred = providers[0];

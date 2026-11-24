@@ -37,7 +37,7 @@ await cache.pruneAll();
 
 const router = new Router(db, cfg);
 const context = new ContextStore(db);
-context.prune(cfg.context.map((c) => c.id));
+context.prune(cfg.contextSets.map((c) => c.id));
 const pipeline = new ReviewPipeline(gh, cfg, db, router, cache, context);
 const worker = new Worker(db, cfg, pipeline);
 const sync = new OutcomeSync(gh, cfg, db);
@@ -49,8 +49,8 @@ poller.start();
 
 console.log(`Auto Reviewer running as @${gh.me} (GitHub login from ${gh.authSource})`);
 console.log(`  dashboard: http://127.0.0.1:${port}`);
-console.log(`  repos: ${cfg.needsSetup ? 'none yet (add them in Settings)' : cfg.repos.allow.join(', ')}`);
-console.log(`  mode: ${cfg.defaultMode}${cfg.dryRun ? ' (DRY RUN: nothing is posted to GitHub)' : ''}`);
+if (cfg.needsSetup) console.log('  repos: none yet (add them in Settings)');
+for (const r of cfg.repos.filter((r) => r.enabled)) console.log(`  ${r.repo}: ${r.profile} review, ${r.dryRun ? 'DRY RUN (nothing is posted to GitHub)' : r.mode}`);
 
 // Ctrl+C stops the app: reviews in progress go back to the queue and resume on the next
 // start. A second Ctrl+C, or a stop that takes longer than 5 seconds, exits immediately.

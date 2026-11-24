@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { nowIso, type Db } from '../db.ts';
 import type { RepoCache } from '../git/mirror.ts';
-import type { Settings } from '../settings-schema.ts';
+import type { RepoConfig } from '../settings-schema.ts';
 import type { ContextHit, ContextResult, ContextStatus } from '../types.ts';
 import { parseMarkdown } from './markdown.ts';
 
@@ -14,7 +14,7 @@ import { parseMarkdown } from './markdown.ts';
 // Building it ("baselining") reads files and parses markdown: no model runs. Only files
 // that changed since the last baseline are read again.
 
-export type ContextEntry = Settings['context'][number];
+export type ContextEntry = Pick<RepoConfig['context'], 'id' | 'sources'>;
 
 const TABLES = `
 CREATE TABLE IF NOT EXISTS context_sets (

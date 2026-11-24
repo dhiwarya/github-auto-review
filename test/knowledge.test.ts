@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, it } from 'node:test';
 import { parseMarkdown, slugify } from '../src/context/markdown.ts';
 import { contextSection } from '../src/context/prompt.ts';
 import { queryTerms } from '../src/context/query.ts';
-import { ContextStore, type ContextEntry } from '../src/context/store.ts';
+import { ContextStore } from '../src/context/store.ts';
 import { Db } from '../src/db.ts';
 import type { RepoCache } from '../src/git/mirror.ts';
 
@@ -86,7 +86,7 @@ describe('context baseline', () => {
   let dir: string;
   let db: Db;
   let store: ContextStore;
-  const entry: ContextEntry = { id: 'abc12345', repo: 'acme/api', sources: [{ repo: 'acme/handbook', path: 'docs' }], notes: 'Start with the overview.' };
+  const entry = { id: 'abc12345', sources: [{ repo: 'acme/handbook', path: 'docs' }], notes: 'Start with the overview.' };
   const docs = {
     'docs/overview.md': '# Overview\nThe platform has a [payments service](payments.md) and a [search service](search.md).\n',
     'docs/payments.md': '# Payments\n## Capture retries\nA failed card capture is retried up to five times with an idempotency key. See [refunds](payments.md#refunds) and the [ledger](ledger.md).\n## Refunds\nRefunds reverse a capture.\n',

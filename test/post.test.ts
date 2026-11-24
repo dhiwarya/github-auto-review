@@ -7,6 +7,7 @@ import { Db } from '../src/db.ts';
 import type { GitHub } from '../src/github/client.ts';
 import { PostRefused, ReviewPipeline } from '../src/review/pipeline.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import { POLICY_VERSION } from '../src/review/policy.ts';
 
 const REVIEWED = 'a'.repeat(40);
@@ -82,7 +83,7 @@ describe('posting a review', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-post-'));
     db = new Db(dir);
     cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, repos: { allow: ['acme/api'], deny: [] } });
+    setRepo(cfg, 'acme/api');
     const job = db.insertJob({
       repo: 'acme/api', pr_number: 1, pr_title: 'Fix', pr_url: 'https://github.com/acme/api/pull/1', author: 'author',
       head_sha: REVIEWED, base_sha: 'b'.repeat(40), since_sha: null, mode: 'draft', source: 'request', dry_run: 1,
@@ -108,7 +109,7 @@ describe('posting a review', () => {
   };
 
   function strictReady() {
-    const settings = { ...cfg.all, reviewProfile: 'strict' as const };
+    const settings = { ...cfg.forRepo('acme/api').data, profile: 'strict' as const };
     db.updateJob(jobId, {
       review_policy: JSON.stringify({ version: POLICY_VERSION, settings }), spec_status: 'no_spec',
       review_report: JSON.stringify({ version: POLICY_VERSION, sections: [], excluded: [], gaps: [], approvalBlocks: [], complete: true,
@@ -120,7 +121,7 @@ describe('posting a review', () => {
     clearBlocker(); strictReady();
     const f = db.findings(jobId).find((f) => f.title === 'Crash')!;
     db.updateFinding(f.id, { severity: 'major', original_severity: 'major' });
-    cfg.update({ ...cfg.all, approval: { enabled: true, minConfidence: 'medium' } });
+    setRepo(cfg, 'acme/api', { approval: { enabled: true, minConfidence: 'medium' } });
     const { gh, sent } = fakeGitHub();
     const preview = await pipeline(gh).previewPost(jobId);
     assert.match(preview.approveNote!, /majors remain open/);
@@ -132,7 +133,7 @@ describe('posting a review', () => {
     clearBlocker(); strictReady();
     let gh = fakeGitHub().gh;
     assert.equal((await pipeline(gh).previewPost(jobId)).approveNote, null);
-    cfg.update({ ...cfg.all, reviewProfile: 'strict' });
+    setRepo(cfg, 'acme/api', { profile: 'strict' });
     db.updateJob(jobId, { review_policy: null, review_report: null });
     const fake = fakeGitHub(); gh = fake.gh;
     assert.match((await pipeline(gh).previewPost(jobId)).approveNote!, /no Strict review policy/);
@@ -185,7 +186,7 @@ describe('posting a review', () => {
     const crash = db.findings(jobId).find((f) => f.title === 'Crash')!;
     assert.equal(crash.comment_id, 500);
     assert.equal(crash.outcome, 'pending');
-    assert.match(crash.posted_body ?? '', /^\*\*Minor \(bug\):\*\* Crash/, 'keeps the exact text it posted');
+    assert.match(crash.posted_body ?? '', /^\*\*Minor:\*\* Crash/, 'keeps the exact text it posted');
     assert.equal(db.findings(jobId).find((f) => f.title === 'Refuted')?.outcome, null, 'dropped findings are never posted');
   });
 
@@ -211,7 +212,7 @@ describe('posting a review', () => {
 
   for (const [name, setup, opts, why] of [
     ['confidence is below the minimum', () => db.updateJob(jobId, { confidence: 'medium' }), {}, /Confidence is medium; approving needs high/],
-    ['approving is off', () => cfg.update({ ...cfg.all, approval: { enabled: false, minConfidence: 'high' } }), {}, /turned off/],
+    ['approving is off', () => setRepo(cfg, 'acme/api', { approval: { enabled: false, minConfidence: 'high' } }), {}, /turned off/],
     ['you requested changes yourself', () => {}, { myReviews: [{ state: 'APPROVED' }, { state: 'CHANGES_REQUESTED' }] }, /requested changes/],
     ['it is your own PR', () => {}, { author: 'me' }, /your own PR/],
     ['the PR is a draft', () => {}, { draftPr: true }, /still a draft/],
@@ -232,7 +233,7 @@ describe('posting a review', () => {
   it('approves at medium confidence when the minimum is medium', async () => {
     clearBlocker();
     db.updateJob(jobId, { confidence: 'medium' });
-    cfg.update({ ...cfg.all, approval: { enabled: true, minConfidence: 'medium' } });
+    setRepo(cfg, 'acme/api', { approval: { enabled: true, minConfidence: 'medium' } });
     const { gh, sent } = fakeGitHub({ myReviews: [{ state: 'CHANGES_REQUESTED' }, { state: 'DISMISSED' }] });
     await pipeline(gh).postDryRun(jobId, 'publish');
     assert.equal(sent.reviews[0].event, 'APPROVE', 'a dismissed change request no longer counts');

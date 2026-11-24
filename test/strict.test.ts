@@ -7,6 +7,7 @@ import { Db } from '../src/db.ts';
 import { NoProviderAvailable, Router } from '../src/llm/router.ts';
 import type { RouterTask } from '../src/llm/router.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import type { Finding, Job, Provider, StrictReport, StrictStage } from '../src/types.ts';
 import type { ReviewContext } from '../src/review/context.ts';
 import { POLICY_VERSION, strictApprovalBlocks } from '../src/review/policy.ts';
@@ -35,9 +36,9 @@ describe('Strict review', () => {
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-strict-'));
     db = new Db(dir); cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, reviewProfile: 'strict', repos: { allow: ['acme/api'], deny: [] } });
+    setRepo(cfg, 'acme/api', { profile: 'strict' });
     job = db.insertJob(jobRow);
-    job = db.updateJob(job.id, { review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.all }), confidence: 'high', spec_status: 'no_spec' });
+    job = db.updateJob(job.id, { review_policy: JSON.stringify({ version: POLICY_VERSION, settings: cfg.forRepo('acme/api').data }), confidence: 'high', spec_status: 'no_spec' });
     fs.writeFileSync(path.join(dir, 'a.js'), 'const limit = 0;\nconst items = [];\n');
     const file = { filename: 'a.js', status: 'modified', additions: 1, deletions: 1, patch: '@@ -1 +1 @@\n-const limit = 1;\n+const limit = 0;' };
     ctx = {
@@ -59,7 +60,7 @@ describe('Strict review', () => {
         output = { verdicts: [{ id: Number(match[1]), verdict: 'confirmed', adjusted_severity: 'major', reason: 'Checked a.js and confirmed the zero limit.' }] };
       } else {
         const ids = [...task.prompt.matchAll(/^## Assigned section (.+)$/gm)].map((m) => m[1]);
-        if (purpose.includes(':all-batches:')) ids.push(...makeBatches(ctx, cfg).sections.map((s) => s.id));
+        if (purpose.includes(':all-batches:')) ids.push(...makeBatches(ctx, cfg.forRepo('acme/api')).sections.map((s) => s.id));
         output = {
           summary: 'The changed paths were inspected.', findings: [], questions_for_author: [], resolved_previous_ids: [],
           spec_alignment: { status: ctx.issues.length ? 'aligned' : 'no_spec', notes: '' },
@@ -74,13 +75,13 @@ describe('Strict review', () => {
     } };
     return { router: router as unknown as Router, calls };
   }
-  const run = (router: Router) => runStrictReview({ job, ctx, cfg, db, router, task: { cwd: dir, workDir: dir, timeoutMs: 1000, signal: new AbortController().signal }, placeOpts: { checkoutDir: dir, prFiles: ctx.prFiles, previous: [], maxNits: 5 } });
+  const run = (router: Router) => runStrictReview({ job, ctx, cfg: cfg.forRepo('acme/api'), db, router, task: { cwd: dir, workDir: dir, timeoutMs: 1000, signal: new AbortController().signal }, placeOpts: { checkoutDir: dir, prFiles: ctx.prFiles, previous: [], maxNits: 5 } });
 
   it('preserves existing Standard defaults and snapshots policy independently of later settings', () => {
-    assert.equal(SettingsStore.defaults().reviewProfile, 'standard');
-    const snapshot = cfg.snapshot();
-    cfg.update({ ...cfg.all, reviewProfile: 'standard', strict: { ...cfg.strict, maxRuns: 5 } });
-    assert.equal(snapshot.reviewProfile, 'strict'); assert.equal(snapshot.strict.maxRuns, 64);
+    assert.equal(new SettingsStore(db).forRepo('new/repo').profile, 'standard');
+    const snapshot = cfg.forRepo('acme/api');
+    cfg.update({ ...cfg.all, strict: { ...cfg.strict, maxRuns: 5 } }); setRepo(cfg, 'acme/api', { profile: 'standard' });
+    assert.equal(snapshot.profile, 'strict'); assert.equal(snapshot.strict.maxRuns, 64);
   });
   it('requires independent providers and never shows the adversarial pass other findings', async () => {
     const { router, calls } = mockRouter((purpose, out) => { if (purpose.startsWith('strict:main:')) out.summary = 'UNIQUE_FIRST_PASS_RESULT'; });
@@ -203,7 +204,7 @@ describe('Strict review', () => {
     assert.ok(result.report.gaps.some((g) => g.includes('missing, duplicate or unverified')));
   });
   it('rejects duplicate, unknown and unverified coverage claims', () => {
-    const sections = makeBatches(ctx, cfg).sections;
+    const sections = makeBatches(ctx, cfg.forRepo('acme/api')).sections;
     const s = stage('main/batch-1');
     s.coverage = [{ section_id: 'unknown', status: 'examined', dependencies: [], tests: [], configuration: [], notes: 'Read it' }];
     assert.equal(coverageGaps(s, sections).length, 2);
@@ -266,7 +267,7 @@ describe('Strict review', () => {
   it('splits large diffs into bounded batches and records unassigned work instead of omitting it', () => {
     cfg.update({ ...cfg.all, strict: { ...cfg.strict, maxDiffChars: 20000, maxBatches: 1 } });
     ctx.reviewFiles[0].patch = '@@ -1 +1,60 @@\n' + '+'.padEnd(1000, 'x').concat('\n').repeat(60);
-    const result = makeBatches(ctx, cfg);
+    const result = makeBatches(ctx, cfg.forRepo('acme/api'));
     assert.equal(result.batches.length, 1); assert.ok(result.sections.length > 1);
     assert.ok(result.gaps.some((g) => g.includes('unassigned')));
     assert.ok(result.batches.every((b) => b.prompt.length < cfg.strict.maxDiffChars));

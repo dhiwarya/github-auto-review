@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
-import { REVIEW_TYPES, type Job, type Overview, type ReviewType } from '../../../src/types.ts';
+import { REVIEW_TYPES, type Job, type Overview, type RepoSummary, type ReviewType } from '../../../src/types.ts';
 import { postJson, useJobs, useTick } from '../api.ts';
+import { entryFor } from '../repos.ts';
 import { clockTime, Progress, SeverityCounts, StateBadge, timeAgo } from '../ui.tsx';
 
 const ACTIVE = new Set(['running', 'queued', 'waiting']);
@@ -34,11 +35,16 @@ function ActiveCard({ job }: { job: Job }) {
 
 const REVIEW_LABEL: Record<ReviewType, string> = { code: 'Code', security: 'Security', consistency: 'Consistency' };
 
-function ReviewNow({ defaults }: { defaults: ReviewType[] | undefined }) {
+// The repo in "https://github.com/owner/repo/pull/12" or "owner/repo#12", once enough is typed.
+const repoIn = (pr: string) => /github\.com\/([\w.-]+\/[\w.-]+)/.exec(pr)?.[1] ?? /^\s*([\w.-]+\/[\w.-]+)#/.exec(pr)?.[1];
+
+function ReviewNow({ repos }: { repos: RepoSummary[] }) {
   const [pr, setPr] = useState('');
   // null until you change a tick box: then it follows the repo's usual reviews.
   const [picked, setPicked] = useState<ReviewType[] | null>(null);
-  const reviews = picked ?? defaults ?? REVIEW_TYPES;
+  const repo = repoIn(pr);
+  const entry = repo ? entryFor(repos, repo) : undefined;
+  const reviews = picked ?? entry?.reviews ?? REVIEW_TYPES;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent) => {
@@ -78,7 +84,7 @@ function ReviewNow({ defaults }: { defaults: ReviewType[] | undefined }) {
             {REVIEW_LABEL[r]}
           </label>
         ))}
-        {!picked && <span className="muted">the repo's usual reviews, unless you change them</span>}
+        {!picked && <span className="muted">{entry ? `${entry.profile === 'strict' ? 'Strict' : 'Standard'} review with ${repo}'s usual reviews` : "the repo's usual reviews"}, unless you change them</span>}
       </div>
       {error && <div className="error small">{error}</div>}
     </form>
@@ -122,7 +128,7 @@ export function QueuePage({ overview }: { overview: Overview | null }) {
             {loaded ? `Nothing to review. Watching GitHub for PRs that request @${overview?.me ?? 'you'}.` : 'Loading…'}
           </p>
         )}
-        <ReviewNow defaults={overview?.settings.reviews} />
+        <ReviewNow repos={overview?.repos ?? []} />
       </section>
 
       <section>

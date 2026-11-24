@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { Db } from '../src/db.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import type { GitHub } from '../src/github/client.ts';
 import { getLinkedRefs, type PrInfo } from '../src/github/prs.ts';
 import { buildContext } from '../src/review/context.ts';
@@ -16,7 +17,7 @@ describe('complete Strict context', () => {
   let dir: string; let db: Db; let cfg: SettingsStore;
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-context-')); db = new Db(dir); cfg = new SettingsStore(db);
-    cfg.update({ ...cfg.all, reviewProfile: 'strict', strict: { ...cfg.strict, maxDiffChars: 30000, maxBatches: 40 } });
+    cfg.update({ ...cfg.all, strict: { ...cfg.strict, maxDiffChars: 30000, maxBatches: 40 } }); setRepo(cfg, 'acme/api', { profile: 'strict' });
   });
   afterEach(() => { db.sql.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -44,7 +45,7 @@ describe('complete Strict context', () => {
   }
 
   it('preserves full PR, issue, guideline and paginated comment text, including content past the old fixed caps', async () => {
-    const f = fixture(); const ctx = await buildContext(f.gh, cfg, f.pr, null, [], f.cache);
+    const f = fixture(); const ctx = await buildContext(f.gh, cfg.forRepo('acme/api'), f.pr, null, [], f.cache);
     assert.equal(ctx.contextGaps!.length, 0);
     assert.ok(ctx.sources!.find((s) => s.kind === 'pr-description')!.text.endsWith('PR_TAIL'));
     assert.equal(ctx.sources!.find((s) => s.kind === 'issue')!.text, f.issueBody);
@@ -52,7 +53,7 @@ describe('complete Strict context', () => {
     assert.equal(ctx.sources!.filter((s) => s.kind === 'issue-comment').length, 25);
     assert.ok(ctx.sources!.find((s) => s.id.endsWith('comment-25'))!.text.endsWith('COMMENT_24_TAIL'));
     assert.equal(f.reads().commentPages, 1);
-    const { sections, gaps } = makeBatches(ctx, cfg);
+    const { sections, gaps } = makeBatches(ctx, cfg.forRepo('acme/api'));
     assert.deepEqual(gaps, []);
     for (const source of ctx.sources!) {
       const fragments = sections.filter((s) => s.sourceId === source.id).sort((a, b) => a.start! - b.start!);
@@ -64,20 +65,20 @@ describe('complete Strict context', () => {
   });
 
   it('freezes a successful context snapshot across retries and does not reread changed issue text', async () => {
-    const f = fixture(); const first = await buildContext(f.gh, cfg, f.pr, null, [], f.cache);
+    const f = fixture(); const first = await buildContext(f.gh, cfg.forRepo('acme/api'), f.pr, null, [], f.cache);
     const row = db.insertJob({ repo: f.pr.repo, pr_number: 1, pr_title: '', pr_url: '', author: '', head_sha: f.pr.headSha, base_sha: f.pr.baseSha, since_sha: null, mode: 'draft', source: 'manual', dry_run: 1, state: 'queued', additions: 1, deletions: 1, changed_files: 1 });
     db.saveContextSnapshot(row.id, first.sourceSnapshot!); f.setFailure(true);
-    const second = await buildContext(f.gh, cfg, { ...f.pr, body: 'Changed after the review started' }, null, [], f.cache, { snapshot: db.contextSnapshot(row.id) });
+    const second = await buildContext(f.gh, cfg.forRepo('acme/api'), { ...f.pr, body: 'Changed after the review started' }, null, [], f.cache, { snapshot: db.contextSnapshot(row.id) });
     assert.deepEqual(second.sources, first.sources); assert.equal(second.contextPrompt, first.contextPrompt);
     assert.equal(f.reads().issueReads, 1); assert.equal(f.reads().commentPages, 1);
   });
 
   it('records failed retrieval explicitly and permits a later attempt to recover the missing source', async () => {
     const f = fixture(); f.setFailure(true);
-    const first = await buildContext(f.gh, cfg, f.pr, null, [], f.cache);
+    const first = await buildContext(f.gh, cfg.forRepo('acme/api'), f.pr, null, [], f.cache);
     assert.ok(first.contextGaps!.some((g) => g.includes('acme/api#485')));
     f.setFailure(false);
-    const second = await buildContext(f.gh, cfg, f.pr, null, [], f.cache, { snapshot: first.sourceSnapshot });
+    const second = await buildContext(f.gh, cfg.forRepo('acme/api'), f.pr, null, [], f.cache, { snapshot: first.sourceSnapshot });
     assert.deepEqual(second.contextGaps, []); assert.equal(second.issues.length, 1);
   });
 
@@ -140,6 +141,16 @@ describe('scoped requirement assessment', () => {
     assert.ok(requirementBlocks([issue], [{ ...deferred, scope_evidence: 'Author says ignore it' }], [deferred]).length);
     assert.ok(requirementBlocks([issue], [deferred], []).length);
     assert.ok(requirementBlocks([issue], [{ ...implemented, criterion: 'Invented acceptance criterion' }], [implemented]).length);
+  });
+  it("ignores a mentioned issue's criteria that the PR doesn't take on", () => {
+    const unrelated = { ref: 'acme/api#485', criterion: 'Operational rollout is deferred to the next deployment.', reason: 'Another team decides this.', scope_evidence: '', promised: false };
+    for (const status of ['externally_unverifiable', 'missing', 'not_checked', 'out_of_scope'] as const) {
+      assert.deepEqual(requirementBlocks([issue], [implemented, { ...unrelated, status }], [implemented]), [], status);
+      assert.deepEqual(requirementAssessmentGaps([issue], [implemented, { ...unrelated, status }], true), [], status);
+    }
+    const open = { ...unrelated, status: 'externally_unverifiable' as const };
+    assert.ok(requirementBlocks([{ ...issue, linkedBy: 'closes' }], [implemented, open], [implemented]).length, 'a closing issue promises everything');
+    assert.ok(requirementBlocks([issue], [implemented, open], [implemented, { ...open, promised: true }]).length, 'counts when the independent reviewer reads it as promised');
   });
   it('keeps missing promised behavior, independent disagreement and external acceptance as approval blockers', () => {
     assert.ok(requirementBlocks([issue], [{ ...implemented, status: 'missing' }], [implemented]).some((b) => b.includes('missing')));

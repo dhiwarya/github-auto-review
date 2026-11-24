@@ -14,6 +14,7 @@ import { ReviewPipeline } from '../src/review/pipeline.ts';
 import { consistencyInstructions, mainInstructions, strictInstructions } from '../src/review/prompts.ts';
 import { relatedAlerts, type RelatedCandidate } from '../src/review/related.ts';
 import { SettingsStore } from '../src/settings.ts';
+import { setRepo } from './helpers.ts';
 import type { Evidence, RelatedPr } from '../src/types.ts';
 
 const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
@@ -109,11 +110,7 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     const db = new Db(path.join(root, name));
     dbs.push(db);
     const cfg = new SettingsStore(db);
-    cfg.update({
-      ...cfg.all,
-      repos: { allow: ['acme/api'], deny: [] },
-      consistency: { stalePrDays: 30, docs: [{ repo: 'acme/*', paths: ['docs/'], docsRepo: 'acme/handbook', notes: 'The guide is hand-written.' }] },
-    });
+    setRepo(cfg, 'acme/api', { docs: { paths: ['docs/'], docsRepo: 'acme/handbook', notes: 'The guide is hand-written.' } });
     return { db, cfg };
   };
   const cache = new RepoCache(path.join(root, 'cache'), null, (repo) => (repo === 'acme/handbook' ? docsRemote : remote));
@@ -180,8 +177,8 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     const [finding] = db.findings(j.id);
     assert.equal(finding.category, 'requirement', 'consistency findings are requirement or docs');
     assert.equal(finding.status, 'summary', 'a page outside the PR can only go in the summary');
-    assert.match(done.review_body ?? '', /\*\*Related open PRs\*\* \(for awareness, not a request to change anything\)\n\n- #8 \(overlap, high confidence\): Both add an export to app\.js\.\n- #9 \(conflict, low confidence: no activity for 90 days\): Also adds an export\./);
-    assert.match(done.review_body ?? '', /Covers security and consistency only; no code review was run\./);
+    assert.match(done.review_body ?? '', /\*\*Heads up\*\*\n\n- #8 \(likely overlap\): Both add an export to app\.js\.\n- #9 \(conflict; no activity for 90 days\): Also adds an export\./);
+    assert.match(done.review_body ?? '', /<sub>Security and consistency review of `[0-9a-f]{7}`/);
     assert.doesNotMatch(done.review_body ?? '', /Auto Reviewer/);
 
     const evidence = db.evidence(j.id) as Evidence;
@@ -206,7 +203,7 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
 
   it('looks the change up in the repo context and gives it to every review', async () => {
     const { db, cfg } = fresh('ctx');
-    cfg.update({ ...cfg.all, context: [{ id: 'ctx00001', repo: 'acme/*', sources: [{ repo: 'acme/handbook', path: '' }], notes: 'Amounts are in cents.' }] });
+    setRepo(cfg, 'acme/api', { context: { id: 'ctx00001', sources: [{ repo: 'acme/handbook', path: '' }], notes: 'Amounts are in cents.' } });
     const { router, runs } = fakeRouter({ main: review(), security: review() });
     const j = job(db, 'code,security');
     const context = new ContextStore(db);
@@ -230,7 +227,7 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
 
   it('reviews without the context when its repository cannot be read', async () => {
     const { db, cfg } = fresh('ctxbroken');
-    cfg.update({ ...cfg.all, context: [{ id: 'ctx00002', repo: 'acme/*', sources: [{ repo: 'acme/missing', path: '' }], notes: '' }] });
+    setRepo(cfg, 'acme/api', { context: { id: 'ctx00002', sources: [{ repo: 'acme/missing', path: '' }], notes: '' } });
     const broken = new RepoCache(path.join(root, 'cache-broken'), null, (repo) => (repo === 'acme/missing' ? path.join(root, 'nope.git') : remote));
     const { router, runs } = fakeRouter({ main: review(), security: review() });
     const j = job(db, 'code,security');

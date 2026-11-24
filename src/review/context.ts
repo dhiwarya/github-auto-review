@@ -1,4 +1,4 @@
-import type { SettingsStore } from '../settings.ts';
+import type { RepoSettings } from '../settings.ts';
 import { randomUUID } from 'node:crypto';
 import type { RepoCache } from '../git/mirror.ts';
 import type { GitHub } from '../github/client.ts';
@@ -97,7 +97,7 @@ export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrCom
 
 export async function buildContext(
   gh: GitHub,
-  cfg: SettingsStore,
+  cfg: RepoSettings,
   pr: PrInfo,
   sinceSha: string | null,
   previous: Finding[],
@@ -105,7 +105,7 @@ export async function buildContext(
   options: { snapshot?: ContextSnapshot | null; recheckOnly?: boolean; priorReview?: { id: number; text: string } } = {},
 ): Promise<ReviewContext> {
   const { snapshot, recheckOnly = false } = options;
-  const strict = cfg.reviewProfile === 'strict';
+  const strict = cfg.profile === 'strict';
   const saved = strict && snapshot?.version === 2 && snapshot.headSha === pr.headSha && snapshot.baseSha === pr.baseSha && !snapshot.gaps.length ? snapshot : null;
   // GitHub's file list stays the reference for where inline comments may go.
   const prFiles = await listPrFiles(gh, pr.repo, pr.number);
@@ -186,7 +186,7 @@ export async function buildContext(
         'Review only the changes since then (the diff below), plus whether they fix the previously raised findings.',
     );
   }
-  if (large && cfg.reviewProfile !== 'strict') {
+  if (large && cfg.profile !== 'strict') {
     parts.push(
       `This is a large change (${changedLines} changed lines). Report only blocker and major findings, at most 10, ` +
         'and say in the summary that the review focused on the highest risks.',

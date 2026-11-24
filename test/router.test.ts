@@ -48,7 +48,7 @@ describe('Router model fallback', { skip: process.platform === 'win32' && 'uses 
   const db = new Db(dir);
   const cfg = new SettingsStore(db);
   const base = SettingsStore.defaults();
-  const saved = cfg.update({ ...base, repos: { allow: ['a/b'], deny: [] }, models: { ...base.models, provider: 'claude', fallbackToOther: true } });
+  const saved = cfg.update({ ...base, repos: [{ repo: 'a/b' }], models: { ...base.models, provider: 'claude', fallbackToOther: true } });
   assert.ok(saved.ok);
   const router = new Router(db, cfg);
   const job = db.insertJob({

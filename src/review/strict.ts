@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { Db } from '../db.ts';
 import type { Router, RouterTask } from '../llm/router.ts';
 import { NoProviderAvailable } from '../llm/router.ts';
-import type { SettingsStore } from '../settings.ts';
+import type { RepoSettings } from '../settings.ts';
 import type { Job, Pass, Provider, StrictReport, StrictStage } from '../types.ts';
 import type { ReviewContext } from './context.ts';
 import { strictInstructions, verifyInstructions } from './prompts.ts';
@@ -25,7 +25,7 @@ export class StrictReviewIncomplete extends Error {}
 
 // Hunk fragments have stable identities. Every fragment must be accounted for, even when
 // a file has no textual patch or the workload budget prevents assigning another batch.
-export function makeBatches(ctx: ReviewContext, cfg: SettingsStore): { batches: Batch[]; sections: Section[]; gaps: string[] } {
+export function makeBatches(ctx: ReviewContext, cfg: RepoSettings): { batches: Batch[]; sections: Section[]; gaps: string[] } {
   const context = ctx.contextPrompt ?? ctx.prompt;
   const room = cfg.strict.maxDiffChars - context.length - 12_000;
   const fragmentSize = Math.max(1000, Math.floor(room / 2));
@@ -99,7 +99,7 @@ export function coverageGaps(stage: StrictStage, sections: Section[]): string[] 
 }
 
 export async function runStrictReview(opts: {
-  job: Job; ctx: ReviewContext; cfg: SettingsStore; db: Db; router: Router;
+  job: Job; ctx: ReviewContext; cfg: RepoSettings; db: Db; router: Router;
   task: Omit<RouterTask, 'instructions' | 'prompt' | 'schema'>; placeOpts: PlaceOptions;
 }) {
   const { job, ctx, cfg, db, router, task, placeOpts } = opts;
@@ -211,7 +211,7 @@ export async function runStrictReview(opts: {
     stage.state = missing.length || !combined ? 'incomplete' : 'done';
     if (combined && stage.provider) {
       report.requirements ??= [];
-      report.requirements.push(...combined.requirements.map((r) => ({ stage: stage.purpose, ref: clean(r.ref), criterion: clean(r.criterion), status: r.status, reason: clean(r.reason), scopeEvidence: clean(r.scope_evidence) })));
+      report.requirements.push(...combined.requirements.map((r) => ({ stage: stage.purpose, ref: clean(r.ref), criterion: clean(r.criterion), status: r.status, promised: r.promised, reason: clean(r.reason), scopeEvidence: clean(r.scope_evidence) })));
       outputs.push({ purpose, batchId: batch.id, provider: stage.provider, model: stage.model, out: combined });
     }
     save();
@@ -285,7 +285,8 @@ export async function runStrictReview(opts: {
   const rating = outputs.map((o) => o.out.review_confidence).sort((a, b) => rank[a.level] - rank[b.level])[0];
   const resolutionReviews = batches.length > 1 ? relevant.filter((o) => o.batchId === 'all-batches') : relevant;
   const mainOut: ReviewOut = {
-    summary: outputs.map((o) => clean(o.out.summary)).filter(Boolean).join('\n\n'),
+    // One summary for the author: the cross-batch synthesis, or the main review's.
+    summary: clean((outputs.find((o) => o.purpose === 'synthesis') ?? outputs.find((o) => o.purpose === 'main'))?.out.summary ?? ''),
     findings: [], questions_for_author: questions,
     // Resolving earlier findings requires agreement across all non-security reviewers.
     resolved_previous_ids: report.complete && resolutionReviews.length >= 2 ? resolutionReviews[0].out.resolved_previous_ids.filter((id) => resolutionReviews.every((o) => o.out.resolved_previous_ids.includes(id))) : [],

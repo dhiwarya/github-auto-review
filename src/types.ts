@@ -169,7 +169,7 @@ export interface StrictReport {
   approvalBlocks: string[];
   complete: boolean;
   inheritedFrom?: number;
-  requirements?: { stage: string; ref: string; status: string; reason: string; criterion?: string; scopeEvidence?: string }[];
+  requirements?: { stage: string; ref: string; status: string; reason: string; criterion?: string; scopeEvidence?: string; promised?: boolean }[];
   recovery?: string;
   workload?: { plannedDiscoveryRuns: number; synthesisRuns: number; verificationReserve: number; maxRuns: number };
   sources?: { id: string; title: string; kind: string; chars: number; digest: string; sections: number }[];
@@ -317,9 +317,16 @@ export interface ProviderStatus {
   models: ModelStatus[]; // the fallback chain, in order
 }
 
+export interface RepoSummary {
+  repo: string;
+  enabled: boolean;
+  dryRun: boolean;
+  mode: ReviewMode;
+  profile: 'standard' | 'strict';
+  reviews: ReviewType[];
+}
+
 export interface ReviewerSettings {
-  reviews: ReviewType[]; // the default set
-  profile?: 'standard' | 'strict';
   provider: Provider;
   fallbackToOther: boolean;
   doubleCheck: boolean;
@@ -338,10 +345,10 @@ export interface Overview {
   me: string | null;
   github_auth: string;
   settings: ReviewerSettings;
-  // No repos configured yet: nothing is reviewed until you add some in Settings.
+  // The repos in Settings and how each is reviewed. `repo` may be a pattern.
+  repos: RepoSummary[];
+  // No repo is switched on yet: nothing is reviewed until you add one in Settings.
   needs_setup: boolean;
-  dry_run: boolean;
-  default_mode: ReviewMode;
   counts: Record<JobState, number>;
   last_poll_at: string | null;
   next_poll_at: string | null;
