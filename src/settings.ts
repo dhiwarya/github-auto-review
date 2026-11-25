@@ -41,6 +41,7 @@ export class RepoSettings {
   get mode() { return this.data.mode; }
   get profile() { return this.data.profile; }
   get approval() { return this.data.approval; }
+  get merge() { return this.data.merge; }
   get labels() { return this.data.labels; }
   get skipAuthors() { return this.data.skipAuthors; }
   get stalePrDays() { return this.data.stalePrDays; }

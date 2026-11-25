@@ -3,6 +3,7 @@ import type { Overview, ProviderStatus } from '../../src/types.ts';
 import { postJson, useOverview, useTick } from './api.ts';
 import { JobView } from './pages/JobView.tsx';
 import { LeaderboardPage } from './pages/Leaderboard.tsx';
+import { PrsPage } from './pages/Prs.tsx';
 import { QueuePage } from './pages/Queue.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { reviewedRepos } from './repos.ts';
@@ -84,6 +85,9 @@ function Header({ overview, route }: { overview: Overview | null; route: string[
           <a className={tab === 'queue' || tab === 'jobs' ? 'active' : ''} href="#/">
             Queue
           </a>
+          <a className={tab === 'prs' ? 'active' : ''} href="#/prs">
+            Pull requests
+          </a>
           <a className={tab === 'leaderboard' ? 'active' : ''} href="#/leaderboard/models">
             Leaderboard
           </a>
@@ -146,6 +150,7 @@ export function App() {
   const overview = useOverview();
   let page;
   if (route[0] === 'jobs' && route[1]) page = <JobView id={Number(route[1])} />;
+  else if (route[0] === 'prs') page = <PrsPage />;
   else if (route[0] === 'leaderboard') page = <LeaderboardPage kind={(route[1] as 'models' | 'repos' | 'authors') ?? 'models'} />;
   else if (route[0] === 'settings') page = <SettingsPage overview={overview} tab={route[1] === 'app' ? 'app' : 'repos'} />;
   else page = <QueuePage overview={overview} />;

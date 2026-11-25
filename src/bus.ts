@@ -11,6 +11,10 @@ class Bus extends EventEmitter {
     this.emit('message', { type: 'steps', jobId } satisfies StreamMessage);
   }
 
+  prsChanged() {
+    this.emit('message', { type: 'prs' } satisfies StreamMessage);
+  }
+
   // The overview is rebuilt by the server on demand; this only says "it changed".
   overviewChanged() {
     this.emit('overview');

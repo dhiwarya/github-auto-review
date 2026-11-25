@@ -132,8 +132,8 @@ function RepoForm({ i, repo, draft, saved, edit, errorFor, seen, onRemoved }: Fo
 
   const copyFrom = (from: RepoConfig) =>
     set((r) => {
-      const { dryRun, mode, profile, reviews, approval, labels, skipAuthors, excludeGlobs, stalePrDays } = structuredClone(from);
-      Object.assign(r, { dryRun, mode, profile, reviews, approval, labels, skipAuthors, excludeGlobs, stalePrDays });
+      const { dryRun, mode, profile, reviews, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays } = structuredClone(from);
+      Object.assign(r, { dryRun, mode, profile, reviews, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays });
     });
 
   return (
@@ -249,6 +249,44 @@ function RepoForm({ i, repo, draft, saved, edit, errorFor, seen, onRemoved }: Fo
               ]}
             />
           </Field>
+        )}
+      </Section>
+
+      <Section title="Auto-merge" description="Merges PRs for you once they're approved. Off by default.">
+        <Toggle
+          checked={repo.merge.enabled}
+          onChange={(v) => set((r) => void (r.merge.enabled = v))}
+          label={<strong>Merge approved PRs</strong>}
+          hint="Merges when your approval is on the PR's latest commit, nobody else has asked for changes, and GitHub says it can merge: required checks passed, branch rules met, no conflicts. Never during a dry run. Hold any PR from the Pull requests page."
+        />
+        {repo.merge.enabled && (
+          <>
+            {repo.mode === 'draft' && <p className="small muted">Reviews here are drafts, so a PR merges only after you submit your draft as an approval.</p>}
+            {repo.mode === 'publish' && !repo.approval.enabled && <p className="small muted">Approving is off for this repo, so only PRs you approve yourself are merged.</p>}
+            {repo.dryRun && <p className="small muted">Nothing merges until you turn off dry run.</p>}
+            <Field label="Merge method" hint="The repo must allow it in its GitHub settings.">
+              <Segmented
+                label="Merge method"
+                value={repo.merge.method}
+                onChange={(v) => set((r) => void (r.merge.method = v))}
+                options={[
+                  ['squash', 'Squash'],
+                  ['merge', 'Merge commit'],
+                  ['rebase', 'Rebase'],
+                ]}
+              />
+            </Field>
+            <Field label="Wait after the approval" hint="Time to hold it from the Pull requests page before it merges. 0 merges as soon as GitHub allows." error={err('merge.delayMin')}>
+              <NumberInput value={repo.merge.delayMin} min={0} max={1440} suffix="minutes" onChange={(v) => set((r) => void (r.merge.delayMin = v))} />
+            </Field>
+            <Toggle
+              checked={repo.merge.deleteBranch}
+              onChange={(v) => set((r) => void (r.merge.deleteBranch = v))}
+              label="Delete the branch after merging"
+              hint="Only branches in this repo, not forks."
+            />
+            <p className="small muted">The GitHub login needs write access to merge. For a fine-grained token, that's Contents: write.</p>
+          </>
         )}
       </Section>
 

@@ -15,6 +15,8 @@ export interface OpenPr {
   draft: boolean;
   headSha: string;
   requestedReviewers: string[];
+  // Changes when the PR does: a push, a review, a comment, a label.
+  updatedAt: string;
 }
 
 export interface WatchStatus {
@@ -108,6 +110,7 @@ export class RepoWatcher {
         head: { sha: string };
         base: { repo: { full_name: string } };
         requested_reviewers?: { login: string }[] | null;
+        updated_at?: string;
       }>('GET /repos/{owner}/{repo}/pulls', { ...splitRepo(repo), state: 'open' });
       const prs = items.map((p) => ({
         repo: p.base.repo.full_name, // GitHub's own spelling, whatever case you typed
@@ -118,6 +121,7 @@ export class RepoWatcher {
         draft: Boolean(p.draft),
         headSha: p.head.sha,
         requestedReviewers: (p.requested_reviewers ?? []).map((u) => u.login),
+        updatedAt: p.updated_at ?? '',
       }));
       const me = this.gh.me.toLowerCase();
       this.status.set(repo.toLowerCase(), {

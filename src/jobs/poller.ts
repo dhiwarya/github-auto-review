@@ -7,6 +7,7 @@ import { bus } from '../bus.ts';
 import { ACTIVE_STATES, type Job, type ReviewType } from '../types.ts';
 import type { Worker } from './worker.ts';
 import type { OutcomeSync } from './sync.ts';
+import type { PrTracker } from './prs.ts';
 
 // Polling stops when fewer than this many requests are left in the hourly budget, so
 // posting reviews and labels still works.
@@ -30,6 +31,8 @@ export class Poller {
   private readonly worker: Worker;
   private readonly sync: OutcomeSync;
   readonly watcher: RepoWatcher;
+  // Keeps reviewed PRs' status current and auto-merges them.
+  private readonly prs: PrTracker | null;
   private timer: NodeJS.Timeout | null = null;
   private stopped = false;
   private polling = false;
@@ -38,13 +41,14 @@ export class Poller {
   private strikes = 0; // consecutive "slow down" answers without a retry time
   private lastSyncAt = 0;
 
-  constructor(gh: GitHub, cfg: SettingsStore, db: Db, worker: Worker, sync: OutcomeSync, watcher?: RepoWatcher) {
+  constructor(gh: GitHub, cfg: SettingsStore, db: Db, worker: Worker, sync: OutcomeSync, watcher?: RepoWatcher, prs?: PrTracker) {
     this.gh = gh;
     this.cfg = cfg;
     this.db = db;
     this.worker = worker;
     this.sync = sync;
     this.watcher = watcher ?? new RepoWatcher(gh, cfg);
+    this.prs = prs ?? null;
   }
 
   start() {
@@ -102,6 +106,7 @@ export class Poller {
       const me = this.gh.me.toLowerCase();
       const requestedKeys = new Set<string>();
       const polled = new Set<string>();
+      const openByRepo = new Map<string, OpenPr[]>();
       for (const repo of await this.watcher.watchedRepos()) {
         let prs: OpenPr[];
         try {
@@ -112,6 +117,7 @@ export class Poller {
           continue;
         }
         polled.add(repo.toLowerCase());
+        openByRepo.set(repo.toLowerCase(), prs);
         for (const pr of prs) {
           if (pr.draft || !pr.requestedReviewers.some((u) => u.toLowerCase() === me)) continue;
           requestedKeys.add(`${pr.repo}#${pr.number}`.toLowerCase());
@@ -139,6 +145,9 @@ export class Poller {
           this.worker.cancel(job.id, 'review request removed or PR closed', 'request-removed');
         }
       }
+
+      // Reviewed PRs: their status on GitHub, and auto-merge.
+      if (this.prs) await this.prs.refresh(openByRepo);
 
       // Checking what you did with submitted drafts doesn't need to be as quick.
       if (Date.now() - this.lastSyncAt >= this.cfg.schedule.syncIntervalSec * 1000) {

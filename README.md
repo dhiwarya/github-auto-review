@@ -153,6 +153,17 @@ Every review gets a confidence level: how sure it is that nothing blocks the PR.
 
 A published review **approves the PR** when no blocker is open (in this review or an earlier one on the PR) and the confidence is at least the minimum set in Settings (high by default). It never approves a draft (you decide when you submit it), a draft PR, your own PR, a PR with commits newer than the review, or one where you requested changes yourself. A change request the app published from a re-check doesn't count as yours: approving replaces it. Otherwise it posts a comment review, and the dashboard says why it didn't approve. An approval counts toward branch protection, so the PR may become mergeable.
 
+### Auto-merge
+
+Off by default, and set per repo. When it's on, the app merges a PR once all of these hold:
+
+- Your standing review approves the PR's latest commit. That's an approval the app published, or a draft you submitted as an approval yourself.
+- Nobody else's standing review requests changes.
+- GitHub says it can merge: required checks passed, branch rules met, no conflicts. A check that is failing or still running holds it, even one that isn't required.
+- The wait after the approval is over (10 minutes by default), and you haven't held the PR.
+
+The app merges only the commit that was approved: if a push lands in between, GitHub refuses the merge. It never merges during a dry run, a draft PR, or a PR in a repo that is switched off. If GitHub refuses, the reason shows on the Pull requests page and the app tries again after 30 minutes, or sooner when the PR changes. The method (squash, merge commit or rebase) is set per repo, and the branch can be deleted afterwards. Merging needs write access: for a fine-grained token, Contents: write.
+
 ## Safety model
 
 - **Only the repos you list in Settings** are ever reviewed. Keep public repos where strangers open PRs out of that list.
@@ -161,6 +172,7 @@ A published review **approves the PR** when no blocker is open (in this review o
 - **Nothing posted can carry a credential.** Every finding, summary, question and note is checked for secret formats (GitHub, Anthropic, OpenAI, AWS, Slack, private keys, JWTs). A secret the PR doesn't add itself is redacted and lowers the confidence to low. Right before posting, the whole review is also checked against the app's own credentials, word for word: the GitHub token, the Claude token and the Codex and Claude login files. A match stops the post and fails the review.
 - **Throwaway checkouts.** Each review gets its own worktree of the PR head in a temp folder, made from the local repo copy, with symlinks disabled. It's deleted afterwards. Your GitHub token is passed to git through the environment and never written into the local copy.
 - **Approves only under strict rules, and requests changes only from a re-check.** Draft mode posts a pending review. Publish mode approves when the rules in [Confidence and approval](#confidence-and-approval) allow it, requests changes when a [re-check](#reviewing-again) finds a blocker or major still open, and posts a comment review otherwise. Text in a PR can't raise the confidence: the hard rules are checked by the app, not the model.
+- **Merges only when you turn it on.** [Auto-merge](#auto-merge) is off for every repo until you switch it on, merges only the commit you approved, and waits for GitHub's own checks and branch rules.
 - **Local dashboard.** It listens on `127.0.0.1` only, rejects foreign `Host` headers (DNS rebinding), and requires a custom header on every write (CSRF).
 - **Subscription terms.** It drives the official `claude` and `codex` CLIs with your own logins, for your own review queue. Don't share one instance with teammates. Each person should run their own.
 - **Company code.** These reviews send your repos' code to your personal Claude and ChatGPT accounts. Check that your employer allows it, and turn off model training in both accounts.
@@ -253,6 +265,7 @@ Codex runs each command in a read-only, offline sandbox, which needs Linux names
 ## Dashboard
 
 - **Queue:** live progress of running reviews, queued and waiting work, history, and a box to review any allowlisted PR on demand.
+- **Pull requests:** every PR with a finished review: your review as it stands on GitHub (approved, changes requested, commented, or a draft not submitted yet), whether it's on the latest commit, other reviewers' change requests, whether the PR is open, merged or closed, and what auto-merge is doing. You can hold or resume auto-merge for any PR. The status comes from GitHub, so a review you submitted or changed by hand shows up too. A PR is checked again only when GitHub's open-PR list shows it changed, which the app fetches anyway. PRs waiting on checks are the exception and are checked once a minute.
 - **Job page:** the review from start to end, live while it runs:
   - **Evidence:** the diff (which files were in the prompt, too long to send, or excluded), linked issues, mentioned PRs, guidelines, file history and the prompt size.
   - **Code review and security review:** model, time, tokens in and out, tool calls, what each returned, and a step-by-step log of every command, tool call and reasoning note (click one for its output).
@@ -280,6 +293,7 @@ Settings come in two parts.
 | Posting to GitHub | Dry run | On |
 | | How reviews are posted | Draft |
 | | Approve PRs that have no blockers | On, when confidence is at least high |
+| Auto-merge | Merge approved PRs | Off; when on: squash, 10 minutes after the approval, branch kept |
 | Reviews | Review profile | Standard; select Strict for independent review and required coverage |
 | | Code / Security / Consistency | All on |
 | Context | Context repositories, uploads and notes | None |

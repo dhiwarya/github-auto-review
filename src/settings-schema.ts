@@ -57,6 +57,19 @@ export const RepoSchema = z.object({
       minConfidence: z.enum(['high', 'medium']).default('high'),
     })
     .prefault({}),
+  // Merge the PR for you once you've approved its latest commit, nobody else asked for
+  // changes, and GitHub says it can be merged (required checks passed, branch rules met,
+  // no conflicts). Never during a dry run.
+  merge: z
+    .object({
+      enabled: z.boolean().default(false),
+      method: z.enum(['squash', 'merge', 'rebase']).default('squash'),
+      // How long to wait after the approval, so there is time to hold it from the dashboard.
+      delayMin: int(0, 1440).default(10),
+      // Delete the PR's branch after merging, when it's in the same repo.
+      deleteBranch: z.boolean().default(false),
+    })
+    .prefault({}),
   // A PR carries one of these at a time. "reviewing" stays while your draft is unsubmitted.
   labels: z
     .object({

@@ -137,6 +137,38 @@ CREATE TABLE IF NOT EXISTS review_context (
   json TEXT NOT NULL
 );
 
+-- Each reviewed PR as GitHub has it now: open, merged or closed, your standing review,
+-- and whether it can be merged. Refreshed when the PR changes; see jobs/prs.ts.
+CREATE TABLE IF NOT EXISTS pull_requests (
+  repo TEXT NOT NULL COLLATE NOCASE,
+  number INTEGER NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  draft INTEGER NOT NULL DEFAULT 0,
+  head_sha TEXT NOT NULL DEFAULT '',
+  head_ref TEXT NOT NULL DEFAULT '',
+  head_repo TEXT,
+  base_ref TEXT NOT NULL DEFAULT '',
+  my_review TEXT,
+  my_review_sha TEXT,
+  my_review_at TEXT,
+  my_pending INTEGER NOT NULL DEFAULT 0,
+  changes_by TEXT NOT NULL DEFAULT '[]',
+  approved_by TEXT NOT NULL DEFAULT '[]',
+  mergeable_state TEXT,
+  gh_updated_at TEXT,
+  checked_at TEXT NOT NULL,
+  merged_at TEXT,
+  merged_by TEXT,
+  hold INTEGER NOT NULL DEFAULT 0,
+  merge_note TEXT,
+  merge_failed_sha TEXT,
+  merge_failed_at TEXT,
+  PRIMARY KEY (repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT

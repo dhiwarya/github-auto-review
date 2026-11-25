@@ -13,6 +13,7 @@ import type { RepoCache } from '../git/mirror.ts';
 import type { GitHub } from '../github/client.ts';
 import { getPr } from '../github/prs.ts';
 import type { Poller } from '../jobs/poller.ts';
+import type { PrTracker } from '../jobs/prs.ts';
 import type { Worker } from '../jobs/worker.ts';
 import type { Router } from '../llm/router.ts';
 import { PostRefused, type ReviewPipeline } from '../review/pipeline.ts';
@@ -34,6 +35,7 @@ interface Deps {
   pipeline: ReviewPipeline;
   context: ContextStore;
   cache: RepoCache;
+  prs: PrTracker;
 }
 
 // Uploaded context: markdown and plain text, up to 20 MB and 3,000 files at a time.
@@ -109,6 +111,17 @@ export async function startServer(deps: Deps) {
       evidence: db.evidence(job.id),
       steps: db.steps(job.id),
     } satisfies JobDetail;
+  });
+
+  // Every reviewed PR: your review as it stands on GitHub, the PR's state, and auto-merge.
+  app.get('/api/prs', async () => deps.prs.rows());
+
+  // Hold or resume auto-merge for one PR. Resuming also retries a failed merge.
+  app.post<{ Body: { repo?: unknown; number?: unknown; hold?: unknown } }>('/api/prs/hold', async (req, reply) => {
+    const { repo, number, hold } = req.body ?? {};
+    if (typeof repo !== 'string' || typeof number !== 'number' || typeof hold !== 'boolean') return reply.code(400).send({ error: 'Send repo, number and hold' });
+    if (!deps.prs.setHold(repo, number, hold)) return reply.code(404).send({ error: "That PR hasn't been checked on GitHub yet" });
+    return { ok: true };
   });
 
   // A step's full text (command output, a tool's result), loaded when you open it.
@@ -254,7 +267,7 @@ export async function startServer(deps: Deps) {
     let pending: NodeJS.Timeout | null = null;
     const onJob = (msg: StreamMessage) => {
       send(msg);
-      if (msg.type !== 'steps') onOverview(); // a model's steps don't change the overview
+      if (msg.type === 'job') onOverview(); // a model's steps or a PR's status don't change the overview
     };
     const onOverview = () => {
       if (pending) return;

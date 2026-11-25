@@ -380,7 +380,44 @@ export interface Leaderboard {
   rows: LeaderboardRow[];
 }
 
+// Your review of a PR as it stands on GitHub. "draft" is a pending review only you can see;
+// "dry_run" and "not_posted" never reached GitHub.
+export type MyReview = 'approved' | 'changes_requested' | 'commented' | 'draft' | 'dry_run' | 'not_posted';
+
+// What auto-merge is doing with a PR. "waiting" merges by itself once its time comes or
+// GitHub allows it; "blocked" needs someone to act.
+export type MergeStatus = 'off' | 'waiting' | 'blocked' | 'held' | 'merged' | 'failed' | 'none';
+
+// One reviewed PR, for the Pull requests page.
+export interface PrRow {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  author: string;
+  // unknown: not checked on GitHub yet.
+  state: 'open' | 'merged' | 'closed' | 'unknown';
+  draft: boolean;
+  review: MyReview;
+  // Your approval or change request is on an older commit than the PR's latest.
+  reviewOutdated: boolean;
+  // You also have a draft review waiting to be submitted.
+  pendingDraft: boolean;
+  changesBy: string[];
+  approvedBy: string[];
+  // GitHub's mergeable_state: clean, blocked, behind, dirty, unstable, has_hooks, unknown, draft.
+  mergeable: string | null;
+  merge: { status: MergeStatus; note: string; at: string | null };
+  hold: boolean;
+  mergedAt: string | null;
+  mergedBy: string | null;
+  checkedAt: string | null;
+  // The PR's latest finished review.
+  job: { id: number; kind: JobKind; finishedAt: string | null; counts: Record<Severity, number> };
+}
+
 export type StreamMessage =
+  | { type: 'prs' } // a reviewed PR's status changed
   | { type: 'job'; job: Job }
   | { type: 'steps'; jobId: number } // a model run of this job did something
   | { type: 'overview'; overview: Overview };
