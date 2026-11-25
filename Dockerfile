@@ -11,7 +11,7 @@ RUN npm run build
 FROM node:26.8.1-bookworm-slim
 # The same versions as on the machine this was set up on. Bump them to update the CLIs.
 ARG CLAUDE_CODE_VERSION=2.1.304
-ARG CODEX_VERSION=0.163.0
+ARG CODEX_VERSION=0.172.0
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates git ripgrep tzdata \
