@@ -218,6 +218,35 @@ describe('keeping reviewed PRs up to date, and merging them', () => {
     assert.equal(calls.get, 3, 'a repo that was not checked says nothing');
   });
 
+  it('looks up PRs in a repo that is no longer watched, once an hour', async () => {
+    setRepo(cfg, 'acme/api', { enabled: false });
+    const { gh, calls } = fakeGitHub({}, [review('me', 'COMMENTED')]);
+    const tracker = new PrTracker(gh, cfg, db);
+    await tracker.refresh(new Map());
+    assert.equal(calls.get, 1);
+    assert.equal(tracker.rows()[0].state, 'open');
+    await tracker.refresh(new Map());
+    assert.equal(calls.get, 1, 'not again within the hour');
+    db.run(`UPDATE pull_requests SET checked_at = ?`, minutesAgo(61));
+    await tracker.refresh(new Map());
+    assert.equal(calls.get, 2);
+  });
+
+  it("doesn't retry a PR it can't read on every check", async () => {
+    setRepo(cfg, 'acme/api', { enabled: false });
+    const { gh } = fakeGitHub();
+    let tries = 0;
+    (gh.octokit.rest.pulls as unknown as { get: () => never }).get = () => {
+      tries++;
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    };
+    const tracker = new PrTracker(gh, cfg, db);
+    await tracker.refresh(new Map());
+    await tracker.refresh(new Map());
+    assert.equal(tries, 1);
+    assert.equal(tracker.rows()[0].state, 'unknown');
+  });
+
   it('shows what was posted until the PR is checked on GitHub', () => {
     const { gh } = fakeGitHub();
     const [row] = new PrTracker(gh, cfg, db).rows();

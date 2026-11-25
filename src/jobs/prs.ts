@@ -4,7 +4,8 @@
 //
 // A PR is looked at again only when GitHub's open-PR list (which the poller fetches anyway)
 // shows it changed, or when it left that list. PRs waiting on checks are the exception:
-// checks finishing don't change the PR, so those are looked at once a minute.
+// checks finishing don't change the PR, so those are looked at once a minute. PRs in a repo
+// that is no longer watched are looked up once an hour while open.
 
 import { bus } from '../bus.ts';
 import { nowIso, type Db } from '../db.ts';
@@ -49,6 +50,8 @@ const TRACK_DAYS = 90;
 // GitHub requests are spent on at most this many PRs per check (two requests each).
 const MAX_REFRESH = 5;
 const WAITING_EVERY_MS = 60_000;
+// PRs in a repo that is no longer watched: looked up this often while open.
+const UNWATCHED_EVERY_MS = 60 * 60_000;
 const RETRY_FAILED_MS = 30 * 60_000;
 const MERGEABLE = new Set(['clean', 'has_hooks']);
 
@@ -169,6 +172,8 @@ export class PrTracker {
   private readonly gh: GitHub;
   private readonly cfg: SettingsStore;
   private readonly db: Db;
+  // When looking up a PR last failed (no access, deleted), so it isn't retried every check.
+  private readonly failedAt = new Map<string, number>();
 
   constructor(gh: GitHub, cfg: SettingsStore, db: Db) {
     this.gh = gh;
@@ -197,8 +202,15 @@ export class PrTracker {
     const due: { repo: string; number: number }[] = [];
     for (const t of this.tracked()) {
       const prs = open.get(t.repo.toLowerCase());
-      if (!prs) continue; // not watched now, or the check failed: nothing new to go on
       const row = this.record(t.repo, t.number);
+      if (!prs) {
+        // A watched repo whose check failed just now: nothing new to go on. A repo no longer
+        // watched has no open-PR list to go by, so its PRs are looked up now and then.
+        if (this.cfg.isRepoAllowed(t.repo)) continue;
+        const last = Math.max(Date.parse(row?.checked_at ?? '') || 0, this.failedAt.get(`${t.repo}#${t.number}`.toLowerCase()) ?? 0);
+        if ((!row || row.state === 'open') && now - last >= UNWATCHED_EVERY_MS) due.push(t);
+        continue;
+      }
       const pr = prs.find((p) => p.number === t.number);
       if (!pr) {
         if (!row || row.state === 'open') due.push(t); // it was merged or closed
@@ -215,6 +227,7 @@ export class PrTracker {
         changed = true;
       } catch (err) {
         if (rateLimited(err)) throw err;
+        this.failedAt.set(`${t.repo}#${t.number}`.toLowerCase(), Date.now());
         console.error(`[prs] ${t.repo}#${t.number}: ${err instanceof Error ? err.message : err}`);
       }
     }
