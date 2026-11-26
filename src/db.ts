@@ -234,6 +234,9 @@ export class Db {
       ['runs', 'output', 'TEXT'],
       ['jobs', 'review_policy', 'TEXT'],
       ['jobs', 'review_report', 'TEXT'],
+      ['jobs', 'scope_job', 'TEXT'],
+      ['jobs', 'left_out', 'TEXT'],
+      ['findings', 'resolved_as', 'TEXT'],
     ];
     for (const [table, column, type] of added) {
       const cols = this.all<{ name: string }>(`PRAGMA table_info(${table})`).map((c) => c.name);

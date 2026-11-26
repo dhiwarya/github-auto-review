@@ -23,12 +23,25 @@ const findingJson = {
   },
 };
 
+// What the PR is for, and what was left out as outside it.
+const scopeJson = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['job', 'left_out', 'out_of_scope_previous_ids'],
+  properties: {
+    job: str,
+    left_out: { type: 'array', items: str },
+    out_of_scope_previous_ids: { type: 'array', items: { type: 'integer' } },
+  },
+};
+
 export const reviewSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'spec_alignment', 'findings', 'questions_for_author', 'resolved_previous_ids', 'review_confidence'],
+  required: ['summary', 'scope', 'spec_alignment', 'findings', 'questions_for_author', 'resolved_previous_ids', 'review_confidence'],
   properties: {
     summary: str,
+    scope: scopeJson,
     spec_alignment: {
       type: 'object',
       additionalProperties: false,
@@ -112,7 +125,7 @@ export const recheckSchema = {
         required: ['id', 'status', 'reason'],
         properties: {
           id: { type: 'integer' },
-          status: enumOf(['open', 'resolved']),
+          status: enumOf(['open', 'resolved', 'out_of_scope']),
           reason: str,
         },
       },
@@ -126,9 +139,10 @@ export const recheckSchema = {
 export const fixCheckSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'verdicts', 'findings', 'review_confidence'],
+  required: ['summary', 'scope', 'verdicts', 'findings', 'review_confidence'],
   properties: {
     summary: str,
+    scope: scopeJson,
     verdicts: recheckSchema.properties.verdicts,
     findings: { type: 'array', items: findingJson },
     review_confidence: reviewSchema.properties.review_confidence,
@@ -152,8 +166,17 @@ export const FindingOut = z.object({
 });
 export type FindingOut = z.infer<typeof FindingOut>;
 
+// Answers saved before scope existed have none.
+export const ScopeOut = z.object({
+  job: z.string().default(''),
+  left_out: z.array(z.string()).default([]),
+  out_of_scope_previous_ids: z.array(z.number().int()).default([]),
+}).prefault({});
+export type ScopeOut = z.infer<typeof ScopeOut>;
+
 export const ReviewOut = z.object({
   summary: z.string(),
+  scope: ScopeOut,
   spec_alignment: z.object({
     status: z.enum(['aligned', 'partial', 'misaligned', 'no_spec', 'not_checked']),
     notes: z.string(),
@@ -233,13 +256,14 @@ export type VerifyOut = z.infer<typeof VerifyOut>;
 
 export const RecheckOut = z.object({
   summary: z.string(),
-  verdicts: z.array(z.object({ id: z.number().int(), status: z.enum(['open', 'resolved']), reason: z.string() })),
+  verdicts: z.array(z.object({ id: z.number().int(), status: z.enum(['open', 'resolved', 'out_of_scope']), reason: z.string() })),
   review_confidence: ReviewOut.shape.review_confidence,
 });
 export type RecheckOut = z.infer<typeof RecheckOut>;
 
 export const FixCheckOut = z.object({
   summary: z.string(),
+  scope: ScopeOut,
   verdicts: RecheckOut.shape.verdicts,
   findings: z.array(FindingOut),
   review_confidence: ReviewOut.shape.review_confidence,

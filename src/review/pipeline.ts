@@ -103,7 +103,7 @@ export class ReviewPipeline {
       await this.publish(job, this.db.findings(job.id));
       return;
     }
-    if (strict) this.db.run('UPDATE findings SET resolved_by_job = NULL WHERE resolved_by_job = ?', job.id);
+    if (strict) this.db.run('UPDATE findings SET resolved_by_job = NULL, resolved_as = NULL WHERE resolved_by_job = ?', job.id);
 
     await this.labelStart(job, pr);
     if (job.kind === 'recheck' && !strict) return this.recheck(job, pr, signal, cfg);
@@ -263,8 +263,14 @@ export class ReviewPipeline {
       }
 
       const resolvedIds = new Set(outs.flatMap((o) => o.resolved_previous_ids));
+      // Outside the PR's job: closed like a fixed one, but said so, and never counted.
+      const outsideIds = new Set(outs.flatMap((o) => o.scope.out_of_scope_previous_ids).filter((id) => !resolvedIds.has(id)));
       const resolved = previous.filter((f) => resolvedIds.has(f.id));
+      const outside = previous.filter((f) => outsideIds.has(f.id));
+      const stillOpen = previous.filter((f) => !resolvedIds.has(f.id) && !outsideIds.has(f.id));
       for (const f of resolved) this.db.updateFinding(f.id, { resolved_by_job: job.id });
+      for (const f of outside) this.db.updateFinding(f.id, { resolved_by_job: job.id, resolved_as: 'out_of_scope' });
+      if (outside.length) this.db.event(job.id, `Outside this PR's job, no longer counted: ${outside.map((f) => `"${f.title}"`).join(', ')}`);
 
       const posted = inserted.filter((f) => f.status !== 'dropped');
       // Free text is posted as written, so it gets the same secret check as the findings.
@@ -294,13 +300,14 @@ export class ReviewPipeline {
       const parts: ReviewParts = fix
         ? {
             kind: 'fixcheck', headSha: job.head_sha, sinceSha: job.since_sha!, jobId: job.id, summary: lead?.text ?? '', findings: posted,
-            open: previous.filter((f) => !resolvedIds.has(f.id)).map(reasonOf), resolved: resolved.map(reasonOf), excluded: ctx.excluded,
+            open: stillOpen.map(reasonOf), resolved: resolved.map(reasonOf), outOfScope: outside.map(reasonOf), excluded: ctx.excluded,
           }
         : ctx.recheckOnly
         ? {
             kind: 'recheck', headSha: job.head_sha, jobId: job.id, summary: lead?.text ?? '', complete: strictResult!.report.complete,
-            open: previous.filter((f) => !resolvedIds.has(f.id)).map((finding) => ({ finding, reason: '' })),
+            open: stillOpen.map((finding) => ({ finding, reason: '' })),
             resolved: resolved.map((finding) => ({ finding, reason: '' })),
+            outOfScope: outside.map((finding) => ({ finding, reason: '' })),
           }
         : {
             kind: 'review',
@@ -319,6 +326,7 @@ export class ReviewPipeline {
             related: alerts,
             reviews: strict ? REVIEW_TYPES : reviews,
             resolved,
+            outOfScope: outside,
             large: !strict && ctx.large,
             excluded: ctx.excluded,
             complete: strictResult?.report.complete,
@@ -326,7 +334,7 @@ export class ReviewPipeline {
       this.db.setKv(partsKey(job.id), JSON.stringify(parts));
       const assessment = assess({
         findings: posted,
-        openEarlier: previous.filter((f) => !resolvedIds.has(f.id)),
+        openEarlier: stillOpen,
         // Strict assesses the linked issue itself, so nothing that affects confidence is skipped.
         // A fix check covers only the new commits; the whole PR had its full review before.
         notRun: strict || fix ? [] : REVIEW_TYPES.filter((r) => !reviews.includes(r)),
@@ -339,7 +347,13 @@ export class ReviewPipeline {
         passes,
       });
       this.db.event(job.id, `Confidence ${assessment.level}${assessment.reasons.length ? `: ${assessment.reasons.join('; ')}` : ''}`);
+      // What the PR is for, in the words of the pass that leads the summary, and what the
+      // passes left out as outside it. Shown on the dashboard, never posted.
+      const scopeJob = [strictOut, fix?.out, ...['code', 'consistency', 'security'].map((t) => ran.find((r) => r.type === t)?.out)].map((o) => o?.scope.job.trim()).find(Boolean) ?? '';
+      const leftOut = distinctQuestions(outs.flatMap((o) => o.scope.left_out).map(clean).filter((t) => t.trim()), 8);
       job = this.db.updateJob(job.id, {
+        scope_job: scopeJob ? clean(scopeJob) : null,
+        left_out: leftOut.length ? JSON.stringify(leftOut) : null,
         related_prs: alerts.length ? JSON.stringify(alerts) : null,
         spec_status: spec.status,
         confidence: assessment.level,
@@ -347,7 +361,7 @@ export class ReviewPipeline {
       });
 
       if (strictResult) {
-        const blocks = strictApprovalBlocks(job, [...posted, ...previous.filter((f) => !resolvedIds.has(f.id))], true);
+        const blocks = strictApprovalBlocks(job, [...posted, ...stillOpen], true);
         job = this.db.updateJob(job.id, { review_report: JSON.stringify(strictResult.report), approve_note: blocks.join('; ') || null });
       }
       job = this.db.updateJob(job.id, { review_body: await this.previewBody(job, pr, posted) });
@@ -461,7 +475,7 @@ export class ReviewPipeline {
       this.db.event(job.id, `Couldn't read the PR discussion (${err instanceof Error ? err.message : err}); checking without it`, 'warn');
       return [];
     });
-    const prompt = `${ctx.prompt}\n\n${openFindingsSection(open, discussion)}`;
+    const prompt = `${ctx.prompt}\n\n${openFindingsSection(open, discussion, ctx.prFiles)}`;
     this.db.setEvidence(job.id, { ...ctx.evidence, promptChars: prompt.length });
     const res = await this.router.run(job.id, 'fixcheck', { ...task, instructions: fixCheckInstructions(this.gh.me), prompt, schema: fixCheckSchema }, { config: cfg });
     const parsed = FixCheckOut.safeParse(res.output);
@@ -470,6 +484,8 @@ export class ReviewPipeline {
     const verdicts = parsed.data.verdicts.filter((v) => ids.has(v.id));
     const out: ReviewOut = {
       summary: parsed.data.summary,
+      // Its verdicts say which earlier findings are outside the PR's job.
+      scope: { ...parsed.data.scope, out_of_scope_previous_ids: verdicts.filter((v) => v.status === 'out_of_scope').map((v) => v.id) },
       spec_alignment: { status: 'not_checked', notes: '' },
       // Only serious problems are raised in a follow-up; anything smaller waits for a full review.
       findings: parsed.data.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major'),
@@ -488,7 +504,7 @@ export class ReviewPipeline {
     const jobs = this.db.jobsForPr(job.repo, job.pr_number);
     const last = jobs.find((j) => j.id !== job.id && j.state === 'done' && j.head_sha === job.head_sha && j.dry_run === job.dry_run);
 
-    const verdicts = new Map<number, { status: 'open' | 'resolved'; reason: string }>();
+    const verdicts = new Map<number, { status: 'open' | 'resolved' | 'out_of_scope'; reason: string }>();
     let summary = '';
     let pass: { level: Confidence; reason: string } | null = null;
     let smuggled = false;
@@ -505,7 +521,7 @@ export class ReviewPipeline {
           getLinkedRefs(this.gh, pr),
           listPrFiles(this.gh, job.repo, job.pr_number),
         ]);
-        const prompt = recheckPrompt(pr, open, discussion, issues);
+        const prompt = recheckPrompt(pr, open, discussion, issues, prFiles);
         const threads = new Set(open.map((f) => f.comment_id).filter((id) => id !== null));
         const people = discussion.filter((c) => !isOwnComment(c.body));
         this.db.setEvidence(job.id, {
@@ -553,12 +569,14 @@ export class ReviewPipeline {
       this.db.event(job.id, 'The re-check put a credential that is not in the PR into its text. It was redacted; check the PR for prompt injection.', 'warn');
     }
 
-    // A finding without a verdict stays open: only an explicit "resolved" closes one.
+    // A finding without a verdict stays open: only an explicit "resolved" or "out_of_scope" closes one.
     const resolved = open.filter((f) => verdicts.get(f.id)?.status === 'resolved');
-    const stillOpen = open.filter((f) => verdicts.get(f.id)?.status !== 'resolved');
+    const outside = open.filter((f) => verdicts.get(f.id)?.status === 'out_of_scope');
+    const stillOpen = open.filter((f) => verdicts.get(f.id)?.status !== 'resolved' && verdicts.get(f.id)?.status !== 'out_of_scope');
     for (const f of resolved) this.db.updateFinding(f.id, { resolved_by_job: job.id });
+    for (const f of outside) this.db.updateFinding(f.id, { resolved_by_job: job.id, resolved_as: 'out_of_scope' });
     const reasonOf = (f: Finding) => ({ finding: f, reason: verdicts.get(f.id)?.reason ?? '' });
-    this.db.event(job.id, open.length ? `Re-check: ${stillOpen.length} still open, ${resolved.length} resolved` : 'No findings from earlier reviews are open, so there was nothing to re-check');
+    this.db.event(job.id, open.length ? `Re-check: ${stillOpen.length} still open, ${resolved.length} resolved${outside.length ? `, ${outside.length} outside this PR's job` : ''}` : 'No findings from earlier reviews are open, so there was nothing to re-check');
 
     // With nothing re-read, the last review's rating of this same code still stands.
     const assessment = pass
@@ -581,7 +599,7 @@ export class ReviewPipeline {
       confidence_notes: assessment ? assessment.reasons.join('\n') || null : (last?.confidence_notes ?? null),
     });
 
-    this.db.setKv(partsKey(job.id), JSON.stringify({ kind: 'recheck', headSha: job.head_sha, summary, open: stillOpen.map(reasonOf), resolved: resolved.map(reasonOf), jobId: job.id } satisfies ReviewParts));
+    this.db.setKv(partsKey(job.id), JSON.stringify({ kind: 'recheck', headSha: job.head_sha, summary, open: stillOpen.map(reasonOf), resolved: resolved.map(reasonOf), outOfScope: outside.map(reasonOf), jobId: job.id } satisfies ReviewParts));
     job = this.db.updateJob(job.id, { review_body: await this.previewBody(job, pr, []) });
 
     if (signal.aborted) throw signal.reason;

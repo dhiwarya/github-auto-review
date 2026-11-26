@@ -127,6 +127,10 @@ export interface Job {
   confidence_notes: string | null;
   // Why the review didn't approve the PR; null when it did, or when it could have.
   approve_note: string | null;
+  // What the review took the PR to be for, and what it left out as outside that, as JSON
+  // (string[]). Neither is posted.
+  scope_job?: string | null;
+  left_out?: string | null;
   additions: number;
   deletions: number;
   changed_files: number;
@@ -200,6 +204,8 @@ export interface Finding {
   comment_id: number | null;
   outcome: Outcome | null;
   resolved_by_job: number | null;
+  // Why a later job closed it: fixed (null, as before this existed) or outside the PR's job.
+  resolved_as?: 'out_of_scope' | null;
   // The inline comment exactly as posted, to tell later whether you edited it.
   posted_body: string | null;
   created_at: string;

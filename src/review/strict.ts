@@ -188,7 +188,8 @@ export async function runStrictReview(opts: {
           const duplicate = out.requirements.filter((entry) => criterionKey(entry) === criterionKey(r)).length > 1;
           requirements.set(criterionKey(r), duplicate ? { ...r, status: 'not_checked' } : r);
         }
-        combined = { ...out, coverage: stage.coverage, findings: ctx.recheckOnly ? [] : [...(previous?.findings ?? []), ...out.findings], requirements: [...requirements.values()], resolved_previous_ids: [...new Set([...(previous?.resolved_previous_ids ?? []), ...out.resolved_previous_ids])] };
+        combined = { ...out, coverage: stage.coverage, findings: ctx.recheckOnly ? [] : [...(previous?.findings ?? []), ...out.findings], requirements: [...requirements.values()], resolved_previous_ids: [...new Set([...(previous?.resolved_previous_ids ?? []), ...out.resolved_previous_ids])],
+          scope: { job: out.scope.job || previous?.scope.job || '', left_out: [...new Set([...(previous?.scope.left_out ?? []), ...out.scope.left_out])], out_of_scope_previous_ids: [...new Set([...(previous?.scope.out_of_scope_previous_ids ?? []), ...out.scope.out_of_scope_previous_ids])] } };
         remaining = batch.sections.filter((s) => coverageGaps({ ...stage, coverage: stage.coverage.filter((c) => c.section_id === s.id) }, [s]).length > 0);
         if (unknownCoverage) remaining = batch.sections;
         requirementGaps = [...new Set([
@@ -284,12 +285,20 @@ export async function runStrictReview(opts: {
   const rank = { high: 2, medium: 1, low: 0 };
   const rating = outputs.map((o) => o.out.review_confidence).sort((a, b) => rank[a.level] - rank[b.level])[0];
   const resolutionReviews = batches.length > 1 ? relevant.filter((o) => o.batchId === 'all-batches') : relevant;
+  const agreed = (ids: (o: (typeof resolutionReviews)[number]) => number[]) =>
+    report.complete && resolutionReviews.length >= 2 ? ids(resolutionReviews[0]).filter((id) => resolutionReviews.every((o) => ids(o).includes(id))) : [];
   const mainOut: ReviewOut = {
     // One summary for the author: the cross-batch synthesis, or the main review's.
     summary: clean((outputs.find((o) => o.purpose === 'synthesis') ?? outputs.find((o) => o.purpose === 'main'))?.out.summary ?? ''),
     findings: [], questions_for_author: questions,
-    // Resolving earlier findings requires agreement across all non-security reviewers.
-    resolved_previous_ids: report.complete && resolutionReviews.length >= 2 ? resolutionReviews[0].out.resolved_previous_ids.filter((id) => resolutionReviews.every((o) => o.out.resolved_previous_ids.includes(id))) : [],
+    // Resolving earlier findings, or ruling them outside the PR's job, requires agreement
+    // across all non-security reviewers.
+    resolved_previous_ids: agreed((o) => o.out.resolved_previous_ids),
+    scope: {
+      job: clean((outputs.find((o) => o.purpose === 'synthesis') ?? outputs.find((o) => o.purpose === 'main'))?.out.scope.job ?? ''),
+      left_out: [...new Set(outputs.flatMap((o) => o.out.scope.left_out.map(clean)))],
+      out_of_scope_previous_ids: agreed((o) => o.out.scope.out_of_scope_previous_ids),
+    },
     spec_alignment: {
       status: !ctx.issues.length ? 'no_spec' : report.approvalBlocks.some((s) => s.startsWith('Requirement ')) ? 'partial' : 'aligned',
       notes: finalRequirements.map((o) => clean(o.out.spec_alignment.notes)).filter(Boolean).join('\n'),

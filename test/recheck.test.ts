@@ -223,7 +223,7 @@ describe('re-checking open findings', () => {
   });
 
   // Runs a re-check with a model that answers `verdicts`, and returns what was posted.
-  async function recheck(verdicts: { id: number; status: 'open' | 'resolved'; reason: string }[], opts: FakeOpts = {}, mode: Job['mode'] = 'publish') {
+  async function recheck(verdicts: { id: number; status: 'open' | 'resolved' | 'out_of_scope'; reason: string }[], opts: FakeOpts = {}, mode: Job['mode'] = 'publish') {
     const { gh, sent } = fakeGitHub(opts);
     const prompts: string[] = [];
     const router = {
@@ -326,6 +326,21 @@ describe('re-checking open findings', () => {
     assert.equal(sent.reviews[0].event, 'APPROVE');
     assert.equal(job.approve_note, null);
     assert.match(String(sent.reviews[0].body), /Everything from my last review is resolved\./);
+  });
+
+  it('approves when what is left is outside the PR\'s job', async () => {
+    const { sent, job, prompts, events } = await recheck([
+      { id: blocker.id, status: 'out_of_scope', reason: 'This PR does not change a.js.' },
+      { id: minor.id, status: 'resolved', reason: 'Fine.' },
+    ]);
+    assert.match(prompts[0], /## Files this PR changes/);
+    assert.equal(sent.reviews[0].event, 'APPROVE');
+    assert.equal(job.approve_note, null);
+    const body = String(sent.reviews[0].body);
+    assert.match(body, /Everything from my last review is resolved\. One finding from my last review is outside this PR's job, so I've stopped counting it\./);
+    assert.match(body, /\*\*Outside this PR\*\*\n\n- Crash \(`a\.js`\): This PR does not change a\.js\./);
+    assert.equal(db.get<{ resolved_as: string }>('SELECT resolved_as FROM findings WHERE id = ?', blocker.id)!.resolved_as, 'out_of_scope');
+    assert.ok(events.includes("Re-check: 0 still open, 1 resolved, 1 outside this PR's job"));
   });
 
   it('keeps a finding open when the model gives it no verdict', async () => {

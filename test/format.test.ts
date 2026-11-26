@@ -123,6 +123,19 @@ describe('why it is not approving, for the author', () => {
   });
 });
 
+describe('earlier findings outside the PR', () => {
+  it('says nothing is open on a re-check when the only finding is outside the PR', () => {
+    const body = recheckBody({ headSha: 'a'.repeat(40), jobId: 3, summary: '', open: [], resolved: [], outOfScope: [{ finding: finding(1, 'major', { title: 'Old rule', file: 'AGENTS.md' }), reason: 'not changed here' }, { finding: finding(2, 'minor', { title: 'Other', file: 'x.md' }), reason: '' }] }, decide({ approve: true }));
+    assert.match(body, /^\*\*No new commits since my last review\.\*\* Nothing from my last review is still open\. 2 findings from my last review are outside this PR's job, so I've stopped counting them\.\n\n\*\*Outside this PR\*\*\n\n- Old rule \(`AGENTS\.md`\): Not changed here\.\n- Other \(`x\.md`\)\n/);
+  });
+
+  it('leaves the fix count to the findings that are in scope', () => {
+    const body = fixCheckBody({ headSha: 'a'.repeat(40), sinceSha: 'b'.repeat(40), jobId: 9, summary: '', findings: [], open: [], resolved: [], outOfScope: [{ finding: finding(1, 'major', { title: 'Old rule', file: 'AGENTS.md' }), reason: '' }], excluded: [] }, decide({ approve: true }));
+    assert.match(body, /^\*\*Approved\.\*\* One finding from my last review is outside this PR's job, so I've stopped counting it\.\n/);
+    assert.doesNotMatch(body, /Nothing from my last review was open/);
+  });
+});
+
 describe('a follow-up check of the fixes', () => {
   const fix = (over: Partial<FixCheckInput> = {}, d: Partial<Decision> = {}) =>
     fixCheckBody({ headSha: 'a'.repeat(40), sinceSha: 'b'.repeat(40), jobId: 9, summary: '', findings: [], open: [], resolved: [], excluded: [], ...over }, decide(d));

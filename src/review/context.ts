@@ -64,7 +64,7 @@ function issuesSection(issues: LinkedIssue[]): string {
 
 // The re-check's prompt: the findings still open, each with the replies in its thread,
 // and the PR conversation since the last review. Comments the app wrote are left out.
-export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrComment[], issues: LinkedIssue[]): string {
+export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrComment[], issues: LinkedIssue[], prFiles: PrFile[]): string {
   const parts: string[] = [];
   parts.push(`# Pull request ${pr.repo}#${pr.number}`);
   parts.push(
@@ -73,13 +73,21 @@ export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrCom
   parts.push(fence('pr-title-and-description', `Title: ${pr.title}\n\n${clip(pr.body || '(no description)', 8000)}`));
   parts.push(issuesSection(issues));
 
-  parts.push(openFindingsSection(findings, discussion));
+  parts.push(`## Files this PR changes (${prFiles.length})\n${prFiles.map((f) => f.filename).join('\n')}`);
+  parts.push(openFindingsSection(findings, discussion, prFiles));
   return parts.join('\n\n');
+}
+
+// A fact for the scope decision, so the model doesn't have to take the author's word for it.
+export function fileNote(f: Pick<Finding, 'file'>, prFiles: PrFile[]): string {
+  if (!f.file) return 'Not tied to a file.';
+  const changed = prFiles.some((p) => p.filename === f.file || p.previousFilename === f.file);
+  return changed ? 'This PR changes this file.' : 'This PR does not change this file.';
 }
 
 // The findings still open, each with the replies in its thread, and the PR conversation
 // since the last review. Comments the app wrote are left out.
-export function openFindingsSection(findings: Finding[], discussion: PrComment[]): string {
+export function openFindingsSection(findings: Finding[], discussion: PrComment[], prFiles: PrFile[]): string {
   const said = discussion.filter((c) => !isOwnComment(c.body));
   const quote = (cs: PrComment[]) => clip(cs.map((c) => `@${c.author} (${c.createdAt}): ${clip(c.body, 2000)}`).join('\n\n'), 8000);
   const list = findings.map((f) => {
@@ -87,6 +95,7 @@ export function openFindingsSection(findings: Finding[], discussion: PrComment[]
     return [
       `### Finding id ${f.id}`,
       `${f.severity} · ${f.category} · ${f.file}${f.line ? `:${f.line}` : ''}`,
+      fileNote(f, prFiles),
       `Title: ${f.title}`,
       `Problem: ${f.problem}`,
       `Evidence:\n${f.evidence}`,
@@ -220,8 +229,8 @@ export async function buildContext(
   if (previous.length) {
     parts.push(
       '## Previously raised findings on this PR\n' +
-        previous.map((f) => `- [id ${f.id}] ${f.severity} ${f.category} ${f.file}${f.line ? `:${f.line}` : ''}: ${f.title}`).join('\n') +
-        '\nDon\'t raise these again. List any the current code fixes in resolved_previous_ids.',
+        previous.map((f) => `- [id ${f.id}] ${f.severity} ${f.category} ${f.file}${f.line ? `:${f.line}` : ''}: ${f.title} (${fileNote(f, prFiles)})`).join('\n') +
+        '\nDon\'t raise these again. List any the current code fixes in resolved_previous_ids, and any outside this PR\'s job in scope.out_of_scope_previous_ids.',
     );
   }
 

@@ -159,6 +159,19 @@ function headsUp(related: RelatedPr[]): string[] {
   }), ''];
 }
 
+// Earlier findings a later look found to be outside the PR's job: no longer counted.
+function outsideSentence(n: number): string {
+  if (!n) return '';
+  return n === 1
+    ? "One finding from my last review is outside this PR's job, so I've stopped counting it."
+    : `${n} findings from my last review are outside this PR's job, so I've stopped counting them.`;
+}
+
+function outsideSection(items: { finding: Finding; reason: string }[]): string[] {
+  if (!items.length) return [];
+  return ['**Outside this PR**', '', ...items.map(({ finding: f, reason }) => `- ${oneLine(f.title)}${where(f, false)}${reason.trim() ? `: ${sentence(reason)}` : ''}`), ''];
+}
+
 function footer(marker: string, parts: string[]): string[] {
   return [marker, '', `<sub>${parts.filter(Boolean).join(' · ')}</sub>`];
 }
@@ -178,6 +191,7 @@ export interface SummaryInput {
   related: RelatedPr[]; // other open PRs worth a look: alerts, not findings
   reviews: ReviewType[]; // the reviews that ran
   resolved: Finding[];
+  outOfScope?: Finding[]; // from earlier reviews, outside the PR's job
   large: boolean;
   excluded: string[];
   complete?: boolean; // Strict: false when some parts weren't checked
@@ -191,7 +205,7 @@ export function summaryBody(s: SummaryInput, d: Decision): string {
   const partial = s.complete === false;
   const out = [verdictLine(findings, d, held, partial), ''];
 
-  const extra = [issueSentence(s.specStatus, s.specNotes, s.issues, s.repo), fixedSentence(s.resolved)].filter(Boolean).join(' ');
+  const extra = [issueSentence(s.specStatus, s.specNotes, s.issues, s.repo), fixedSentence(s.resolved), outsideSentence(s.outOfScope?.length ?? 0)].filter(Boolean).join(' ');
   const summary = s.summary.trim();
   if (summary || extra) out.push(summary.includes('\n') || !summary ? [summary, extra].filter(Boolean).join('\n\n') : [summary, extra].filter(Boolean).join(' '), '');
 
@@ -227,6 +241,7 @@ export interface RecheckInput {
   summary: string;
   open: { finding: Finding; reason: string }[];
   resolved: { finding: Finding; reason: string }[];
+  outOfScope?: { finding: Finding; reason: string }[];
   jobId: number;
   complete?: boolean;
 }
@@ -236,7 +251,11 @@ export interface RecheckInput {
 export function recheckBody(r: RecheckInput, d: Decision): string {
   const lead = '**No new commits since my last review.**';
   const n = r.open.length;
-  const out = [n ? `${lead} ${plural(n, 'finding')} ${n === 1 ? 'is' : 'are'} still open: ${countsLine(r.open.map((o) => o.finding))}.` : `${lead} ${r.resolved.length ? 'Everything from my last review is resolved.' : 'Nothing from earlier reviews is open.'}`, ''];
+  const outside = r.outOfScope ?? [];
+  const status = n
+    ? `${plural(n, 'finding')} ${n === 1 ? 'is' : 'are'} still open: ${countsLine(r.open.map((o) => o.finding))}.`
+    : r.resolved.length ? 'Everything from my last review is resolved.' : outside.length ? 'Nothing from my last review is still open.' : 'Nothing from earlier reviews is open.';
+  const out = [[lead, status, outsideSentence(outside.length)].filter(Boolean).join(' '), ''];
   if (r.summary.trim()) out.push(r.summary.trim(), '');
 
   if (n) {
@@ -250,6 +269,7 @@ export function recheckBody(r: RecheckInput, d: Decision): string {
   if (r.resolved.length) {
     out.push('**Resolved**', '', ...r.resolved.map(({ finding: f, reason }) => `- ${oneLine(f.title)}${where(f, false)}${reason.trim() ? `: ${sentence(reason)}` : ''}`), '');
   }
+  out.push(...outsideSection(outside));
   const why = d.approve ? { reasons: [] } : authorReasons(d.notes, { findings: [], questions: [], doubts: [] });
   if (why.reasons.length) out.push(...notApproving(why.reasons, []));
 
@@ -265,6 +285,7 @@ export interface FixCheckInput {
   findings: Finding[]; // new problems in the new commits (posted ones)
   open: { finding: Finding; reason: string }[]; // from earlier reviews, still open
   resolved: { finding: Finding; reason: string }[]; // from earlier reviews, fixed now
+  outOfScope?: { finding: Finding; reason: string }[]; // from earlier reviews, outside the PR's job
   excluded: string[];
 }
 
@@ -286,8 +307,9 @@ export function fixCheckBody(r: FixCheckInput, d: Decision): string {
 
   const total = r.open.length + r.resolved.length;
   const n = r.open.length;
+  const outside = r.outOfScope ?? [];
   const fixes = !total
-    ? 'Nothing from my last review was open.'
+    ? outside.length ? '' : 'Nothing from my last review was open.'
     : !n
       ? total === 1 ? 'The finding from my last review is fixed.' : `All ${total} findings from my last review are fixed.`
       : r.resolved.length
@@ -295,7 +317,7 @@ export function fixCheckBody(r: FixCheckInput, d: Decision): string {
         : total === 1 ? `The finding from my last review is still open: ${countsLine(stillOpen)}.` : `All ${total} findings from my last review are still open: ${countsLine(stillOpen)}.`;
   const inline = fresh.some((f) => f.status === 'inline' && f.line !== null);
   const added = fresh.length ? ` The new commits add ${countsLine(fresh)}.${inline ? ' Details are in the comments on the code.' : ''}` : '';
-  const out = [`${lead} ${fixes}${added}`, ''];
+  const out = [`${[lead, fixes, outsideSentence(outside.length)].filter(Boolean).join(' ')}${added}`, ''];
   if (r.summary.trim()) out.push(r.summary.trim(), '');
 
   if (n) {
@@ -319,6 +341,7 @@ export function fixCheckBody(r: FixCheckInput, d: Decision): string {
   if (r.resolved.length) {
     out.push('**Fixed**', '', ...r.resolved.map(({ finding: f, reason }) => `- ${oneLine(f.title)}${where(f, false)}${reason.trim() ? `: ${sentence(reason)}` : ''}`), '');
   }
+  out.push(...outsideSection(outside));
   if (why.reasons.length) out.push(...notApproving(why.reasons, []));
 
   out.push(...footer(`<!-- ai-review sha=${r.headSha} job=${r.jobId} -->`, [

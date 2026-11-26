@@ -18,6 +18,20 @@ Security reviews can trip a provider's safety filter (OpenAI may flag one as "po
 
 Then every blocker and major is double-checked in a second, separate run. Refuted findings are dropped, and uncertain ones are downgraded.
 
+### The PR's job
+
+Every review first works out what the PR is for, from its title, description, commits and linked issues. A PR often takes on one item of a larger issue or one step of a plan; then that is its job. The PR is reviewed against that job, and these are **outside it**:
+
+- problems in files the PR doesn't change, unless its changes cause them or make them worse;
+- items of a linked issue, later steps and follow-up work the PR doesn't take on;
+- code, services and documents in other repositories, and other PRs' work, as long as the PR uses them as documented.
+
+Anything outside the job is never a finding and never lowers confidence, so it can't hold back an approval, or the auto-merge that follows one. The review's page shows what the review took the PR's job to be and anything it left out; neither is posted. Scope never excuses a problem the PR's own changes introduce, or something the PR says it does but doesn't.
+
+A finding from an earlier review can turn out to be outside the job, for example when the author replies that the PR doesn't touch that file. The next review checks that itself, since every earlier finding is listed with whether the PR changes its file, and if it holds, it stops counting the finding and lists it under **Outside this PR** with the reason. A reply alone isn't enough.
+
+Instructions to an AI reviewer are reported as a security finding only when the PR adds them. Guidance already on the base branch, such as `AGENTS.md` or `CLAUDE.md`, is ordinary repository content, and a person on the PR asking for an approval is ordinary conversation. Neither is ever followed.
+
 ### Repo context
 
 A repo can have **context**: markdown that explains how the system is meant to work, such as architecture, design documents, domain rules and conventions. It belongs to that repo alone: you set it up under the repo in **Settings → Repositories → Context**, from:
@@ -108,10 +122,10 @@ review requested ─► queued ─► reviewing ─► posted ─► approved, o
 
 Submitting a review takes you off the PR's requested reviewers, as on GitHub for anyone. To get another review, the author **re-requests your review**:
 
-- **With new commits:** a **follow-up check of the fixes**. The first review looked at the whole PR; this one is a single model run instead of three reviews, so it costs far less. It reads each finding still open from earlier reviews against the new code and what was said on the PR since, and says which are fixed and which are still open, with a reason for each. It also reads the new commits for serious new problems, blockers and majors only: a fix that breaks something else. Smaller suggestions wait for the next full review, and the linked issue isn't checked again, so the last review's verdict on it stands. Confidence comes from this check, so a PR can be approved once everything is fixed.
+- **With new commits:** a **follow-up check of the fixes**. The first review looked at the whole PR; this one is a single model run instead of three reviews, so it costs far less. It reads each finding still open from earlier reviews against the new code and what was said on the PR since, and says which are fixed, which are still open, and which are outside the PR's job, with a reason for each. It also reads the new commits for serious new problems, blockers and majors only: a fix that breaks something else. Smaller suggestions wait for the next full review, and the linked issue isn't checked again, so the last review's verdict on it stands. Confidence comes from this check, so a PR can be approved once everything is fixed.
 
   The whole PR is reviewed again instead, with every review, when the new commits change more than 400 lines, or more than half of a PR of over 100 changed lines, or when the branch was rebased or force-pushed so the last review no longer lines up. **Full PR review** on a review's page does the same on demand. To run every review on the new commits instead of checking the fixes, set **Settings → Repositories → Reviews → After the author pushes new commits** to *Review the new commits*. Strict reviews keep their own follow-up rules.
-- **Without new commits:** a **re-check**. Nothing new is raised on code that was already reviewed. Each finding still open from earlier reviews is read again against the code and what was said on the PR since (replies in its thread, and the PR conversation), and stays open or is resolved. A reply saying "fixed" or "intentional" only resolves a finding when the code confirms it. The review then:
+- **Without new commits:** a **re-check**. Nothing new is raised on code that was already reviewed. Each finding still open from earlier reviews is read again against the code and what was said on the PR since (replies in its thread, and the PR conversation), and stays open, is resolved, or is ruled outside the PR's job. A reply saying "fixed", "intentional" or "out of scope" only counts when the code and the PR's files confirm it. The review then:
   - **requests changes** while a blocker or major is still open,
   - **comments** when only minors or nits are,
   - **approves** when everything is resolved and the rules in [Confidence and approval](#confidence-and-approval) allow it.
@@ -149,9 +163,9 @@ Every review gets a confidence level: how sure it is that nothing blocks the PR.
 | --- | --- |
 | Low | The code review or the security review was switched off |
 | Medium | The consistency review was switched off, so the linked issue and docs weren't checked |
-| Medium | A major finding is open, there are questions for the author, the code only partly matches the linked issue, the change is large, or the diff was too long to send in full |
+| Medium | A major finding is open, there are questions for the author, the code leaves out part of what it promises from the linked issue, the change is large, or the diff was too long to send in full |
 | Low | The code doesn't match the linked issue, or the PR tried to get a credential out of the reviewer |
-| Either | A review pass rates its own confidence lower, saying what it couldn't check |
+| Either | A review pass rates its own confidence lower, saying what it couldn't check within the PR's job |
 
 A published review **approves the PR** when no blocker is open (in this review or an earlier one on the PR) and the confidence is at least the minimum set in Settings (high by default). It never approves a draft (you decide when you submit it), a draft PR, your own PR, a PR with commits newer than the review, or one where you requested changes yourself. A change request the app published from a re-check doesn't count as yours: approving replaces it. Otherwise it posts a comment review, and the dashboard says why it didn't approve. An approval counts toward branch protection, so the PR may become mergeable.
 

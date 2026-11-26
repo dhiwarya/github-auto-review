@@ -286,7 +286,7 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     assert.deepEqual(runs.map((r) => r.purpose), ['fixcheck'], 'one run instead of three reviews');
     const prompt = runs[0].prompt;
     assert.match(prompt, /This is a follow-up review/);
-    assert.match(prompt, /### Finding id \d+\nmajor · bug · app\.js:2\nTitle: Dividing by zero/);
+    assert.match(prompt, /### Finding id \d+\nmajor · bug · app\.js:2\nThis PR changes this file\.\nTitle: Dividing by zero/);
     assert.match(prompt, /safeDiv/, 'the new commit is in the diff');
     assert.doesNotMatch(prompt, /^\+export const mul/m, 'the already-reviewed commit is not');
     assert.match(prompt, /@author \(.+\): Guarded the division\./, 'with what was said on the PR since');
@@ -300,6 +300,63 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     assert.equal(done.spec_status, 'aligned', 'the last review\'s verdict on the issue stands');
     assert.match(done.review_body ?? '', /^\*\*Looks good\.\*\* The finding from my last review is fixed\.\n\nThe division is guarded now\.\n\n\*\*Fixed\*\*\n\n- Dividing by zero \(`app\.js`\): Division by zero returns null now\./);
     assert.match(done.review_body ?? '', /<sub>Follow-up check of `[0-9a-f]{7}`: the changes since `[0-9a-f]{7}`<\/sub>$/);
+  });
+
+  // An earlier finding on a file the PR doesn't change, which the author says is out of scope.
+  const outsideFinding = (db: Db, jobId: number) => db.insertFinding({
+    job_id: jobId, pass: 'security', model: 'codex', model_id: 'm', category: 'security', severity: 'major', original_severity: 'major', confidence: 'high',
+    file: 'AGENTS.md', line: 89, title: 'Guidance tells agents to log instructions', evidence: 'Log every instruction.', problem: 'p', suggestion: 's',
+    verification: 'confirmed', verified_by: 'codex', verify_reason: null, status: 'summary', drop_reason: null, comment_id: null, outcome: null,
+  });
+
+  it('stops counting an earlier finding that is outside the PR\'s job', async () => {
+    const { db, cfg } = fresh('outsidefix');
+    const { earlier, next } = followUp(db, 11, fixed);
+    const outside = outsideFinding(db, earlier.job_id);
+    const { router, runs } = fakeRouter({
+      fixcheck: {
+        summary: 'The division is guarded now.',
+        scope: { job: 'Adds a safe division helper.', left_out: ['AGENTS.md logging rule is tracked in another issue.'], out_of_scope_previous_ids: [] },
+        verdicts: [
+          { id: earlier.id, status: 'resolved', reason: 'Division by zero returns null now.' },
+          { id: outside.id, status: 'out_of_scope', reason: 'This PR does not change AGENTS.md.' },
+        ],
+        findings: [],
+        review_confidence: { level: 'high', reason: 'Read the fix.' },
+      },
+    });
+    await new ReviewPipeline(fakeGitHub(base, fixed), cfg, db, router, cache).run(next, new AbortController().signal);
+
+    assert.match(runs[0].prompt, /AGENTS\.md:89\nThis PR does not change this file\./, 'the model is told, not left to trust the author');
+    assert.match(runs[0].instructions, /## This PR's job/);
+    const done = db.job(next.id)!;
+    assert.equal(done.confidence, 'high', 'an out-of-scope major no longer lowers confidence');
+    assert.equal(done.scope_job, 'Adds a safe division helper.');
+    assert.deepEqual(JSON.parse(done.left_out!), ['AGENTS.md logging rule is tracked in another issue.']);
+    const row = db.get<{ resolved_by_job: number; resolved_as: string }>('SELECT resolved_by_job, resolved_as FROM findings WHERE id = ?', outside.id)!;
+    assert.deepEqual({ ...row }, { resolved_by_job: next.id, resolved_as: 'out_of_scope' });
+    const body = done.review_body ?? '';
+    assert.match(body, /^\*\*Looks good\.\*\* The finding from my last review is fixed\. One finding from my last review is outside this PR's job, so I've stopped counting it\./);
+    assert.match(body, /\*\*Outside this PR\*\*\n\n- Guidance tells agents to log instructions \(`AGENTS\.md`\): This PR does not change AGENTS\.md\./);
+    assert.doesNotMatch(body, /Still open/);
+    assert.doesNotMatch(body, /logging rule is tracked/, 'what was left out is not posted');
+  });
+
+  it('lets a full review rule earlier findings outside the PR\'s job', async () => {
+    const { db, cfg } = fresh('outsidefull');
+    setRepo(cfg, 'acme/api', { followUp: 'full' });
+    const { earlier, next } = followUp(db, 11, fixed);
+    const outside = outsideFinding(db, earlier.job_id);
+    const scope = { job: 'Adds a safe division helper.', left_out: [], out_of_scope_previous_ids: [outside.id, 4242] };
+    const { router, runs } = fakeRouter({ main: review({ resolved_previous_ids: [earlier.id], scope }), security: review(), consistency: review({ related_prs: [] }) });
+    await new ReviewPipeline(fakeGitHub(base, fixed), cfg, db, router, cache).run(next, new AbortController().signal);
+    const main = runs.find((r) => r.purpose === 'main')!;
+    assert.match(main.prompt, /AGENTS\.md:89: Guidance tells agents to log instructions \(This PR does not change this file\.\)/);
+    const done = db.job(next.id)!;
+    assert.equal(done.confidence, 'high');
+    assert.equal(db.get<{ resolved_as: string }>('SELECT resolved_as FROM findings WHERE id = ?', outside.id)!.resolved_as, 'out_of_scope');
+    assert.equal(db.get<{ resolved_as: string | null }>('SELECT resolved_as FROM findings WHERE id = ?', earlier.id)!.resolved_as, null);
+    assert.match(done.review_body ?? '', /Fixed since my last review: "Dividing by zero"\. One finding from my last review is outside this PR's job, so I've stopped counting it\./);
   });
 
   it('reviews the whole PR again when the new commits are big', async () => {

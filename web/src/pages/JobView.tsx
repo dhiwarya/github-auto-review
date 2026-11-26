@@ -45,7 +45,7 @@ function FindingCard({ f }: { f: Finding }) {
         )}
         {!dropped && <span>{f.status === 'inline' ? 'inline comment' : 'in review summary'}</span>}
         {f.outcome && <span>{OUTCOME_LABEL[f.outcome] ?? f.outcome}</span>}
-        {f.resolved_by_job && <span>fixed in a later commit</span>}
+        {f.resolved_by_job && <span>{f.resolved_as === 'out_of_scope' ? "outside this PR's job: no longer counted" : 'fixed in a later commit'}</span>}
         {dropped && <span className="drop-reason">Discarded: {f.drop_reason}</span>}
       </div>
     </article>
@@ -53,6 +53,38 @@ function FindingCard({ f }: { f: Finding }) {
 }
 
 const CONFIDENCE_LABEL = { high: 'High', medium: 'Medium', low: 'Low' } as const;
+
+// What the review took the PR to be for, and what it left out as outside that. Neither is posted.
+function Scope({ job }: { job: Job }) {
+  let leftOut: string[] = [];
+  try {
+    leftOut = job.left_out ? (JSON.parse(job.left_out) as string[]) : [];
+  } catch {
+    // An unreadable value just means nothing to show.
+  }
+  if (!job.scope_job && !leftOut.length) return null;
+  return (
+    <div className="small related">
+      {job.scope_job && (
+        <div>
+          <strong>This PR's job</strong> <span className="muted">{job.scope_job}</span>
+        </div>
+      )}
+      {leftOut.length > 0 && (
+        <>
+          <div>
+            <strong>Left out as outside it</strong> <span className="muted">not posted; doesn't affect confidence or approval</span>
+          </div>
+          <ul>
+            {leftOut.map((t, i) => (
+              <li key={i} className="muted">{t}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
 
 // Other open PRs that touch the same code: an alert, never a finding.
 function RelatedPrs({ job }: { job: Job }) {
@@ -307,6 +339,7 @@ export function JobView({ id }: { id: number }) {
         )}
 
         <Verdict job={job} />
+        <Scope job={job} />
         <RelatedPrs job={job} />
 
         {active && (
