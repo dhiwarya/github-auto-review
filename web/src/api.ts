@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Job, Overview, StreamMessage } from '../../src/types.ts';
+import type { HistoryPage, Job, Overview, StreamMessage } from '../../src/types.ts';
 
 export async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
@@ -62,25 +62,49 @@ export function useOverview(): Overview | null {
   return overview;
 }
 
+const ACTIVE_STATES = new Set(['queued', 'running', 'waiting']);
+
+// Queued, running and waiting jobs, kept live.
 export function useJobs(): { jobs: Job[]; loaded: boolean } {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    getJson<Job[]>('/api/jobs')
+    getJson<Job[]>('/api/jobs?active=1')
       .then((j) => setJobs(j))
       .finally(() => setLoaded(true));
   }, []);
   useStream((m) => {
     if (m.type !== 'job') return;
     setJobs((prev) => {
-      const i = prev.findIndex((j) => j.id === m.job.id);
-      if (i === -1) return [m.job, ...prev];
-      const next = prev.slice();
-      next[i] = m.job;
-      return next;
+      const rest = prev.filter((j) => j.id !== m.job.id);
+      return ACTIVE_STATES.has(m.job.state) ? [m.job, ...rest].sort((a, b) => b.id - a.id) : rest;
     });
   });
   return { jobs, loaded };
+}
+
+// One page of finished jobs. Reloaded when a job finishes or changes after finishing.
+export function useHistory(page: number, size: number): { data: HistoryPage | null; error: string | null } {
+  const [data, setData] = useState<HistoryPage | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
+  const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    let live = true;
+    getJson<HistoryPage>(`/api/history?page=${page}&size=${size}`)
+      .then((d) => live && (setData(d), setError(null)))
+      .catch((e) => live && setError(String(e.message ?? e)));
+    return () => void (live = false);
+  }, [page, size, version]);
+  useStream((m) => {
+    if (m.type !== 'job' || ACTIVE_STATES.has(m.job.state) || pending.current) return;
+    pending.current = setTimeout(() => {
+      pending.current = null;
+      setVersion((v) => v + 1);
+    }, 500);
+  });
+  useEffect(() => () => void (pending.current && clearTimeout(pending.current)), []);
+  return { data, error };
 }
 
 // Re-renders every few seconds so relative times stay fresh.

@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import { REVIEW_TYPES, type Job, type Overview, type RepoSummary, type ReviewType } from '../../../src/types.ts';
-import { postJson, useJobs, useTick } from '../api.ts';
+import { postJson, useHistory, useJobs, useTick } from '../api.ts';
 import { entryFor } from '../repos.ts';
-import { clockTime, Progress, SeverityCounts, StateBadge, timeAgo } from '../ui.tsx';
+import { clockTime, Pager, Progress, scrollToSection, SeverityCounts, StateBadge, timeAgo } from '../ui.tsx';
 
 const ACTIVE = new Set(['running', 'queued', 'waiting']);
+const PAGE_SIZE = 25;
 
 function modeLabel(j: Job) {
   if (j.dry_run) return 'dry run';
@@ -97,7 +98,14 @@ export function QueuePage({ overview }: { overview: Overview | null }) {
   const active = jobs
     .filter((j) => ACTIVE.has(j.state))
     .sort((a, b) => (a.state === 'running' ? -1 : b.state === 'running' ? 1 : a.id - b.id));
-  const history = jobs.filter((j) => !ACTIVE.has(j.state));
+  const [page, setPage] = useState(1);
+  const { data, error } = useHistory(page, PAGE_SIZE);
+  const history = data?.jobs ?? [];
+  const total = data?.total ?? 0;
+  const goTo = (p: number) => {
+    setPage(p);
+    scrollToSection('history');
+  };
   const c = overview?.counts;
 
   return (
@@ -131,10 +139,11 @@ export function QueuePage({ overview }: { overview: Overview | null }) {
         <ReviewNow repos={overview?.repos ?? []} />
       </section>
 
-      <section>
+      <section id="history">
         <h2>
-          History {history.length > 0 && <span className="count">{history.length}</span>}
+          History {total > 0 && <span className="count">{total}</span>}
         </h2>
+        {error && <p className="error">{error}</p>}
         {history.length ? (
           <div className="table-wrap">
             <table className="table clickable">
@@ -177,8 +186,9 @@ export function QueuePage({ overview }: { overview: Overview | null }) {
             </table>
           </div>
         ) : (
-          <p className="empty">{loaded ? 'Finished reviews will show up here.' : 'Loading…'}</p>
+          <p className="empty">{data ? 'Finished reviews will show up here.' : 'Loading…'}</p>
         )}
+        {data && <Pager page={data.page} size={data.size} total={total} onPage={goTo} label="History pages" />}
       </section>
     </div>
   );

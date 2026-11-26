@@ -65,6 +65,54 @@ export function Progress({ value }: { value: number }) {
   );
 }
 
+// Page n of a list: "26–50 of 171", previous and next, and the pages around this one.
+export function Pager({ page, size, total, onPage, label = 'Pages' }: { page: number; size: number; total: number; onPage: (p: number) => void; label?: string }) {
+  const pages = Math.max(1, Math.ceil(total / size));
+  if (total <= size) return null;
+  const near = [...new Set([1, page - 1, page, page + 1, pages])].filter((p) => p >= 1 && p <= pages).sort((a, b) => a - b);
+  const items: (number | 'gap')[] = [];
+  for (const p of near) {
+    const last = items.at(-1);
+    if (typeof last === 'number' && p - last > 1) items.push('gap');
+    items.push(p);
+  }
+  return (
+    <nav className="pager" aria-label={label}>
+      <span className="small muted">
+        {(page - 1) * size + 1}–{Math.min(page * size, total)} of {total}
+      </span>
+      <div className="pager-buttons">
+        <button type="button" className="btn btn-ghost btn-small" disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Previous page">
+          ‹ Previous
+        </button>
+        {items.map((p, i) =>
+          p === 'gap' ? (
+            <span key={`gap${i}`} className="muted small" aria-hidden>
+              …
+            </span>
+          ) : (
+            <button key={p} type="button" className={`btn btn-small ${p === page ? '' : 'btn-ghost'}`} aria-current={p === page ? 'page' : undefined} onClick={() => onPage(p)}>
+              {p}
+            </button>
+          ),
+        )}
+        <button type="button" className="btn btn-ghost btn-small" disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="Next page">
+          Next ›
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+// Scrolls a section's top into view just below the sticky header, e.g. after changing page.
+export function scrollToSection(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const header = document.querySelector('.header')?.getBoundingClientRect().height ?? 0;
+  const top = el.getBoundingClientRect().top + window.scrollY - header - 12;
+  if (top < window.scrollY) window.scrollTo({ top: Math.max(0, top) });
+}
+
 export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 7) : '');
 
 // 41234 -> "41.2k"

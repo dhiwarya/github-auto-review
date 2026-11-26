@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { MyReview, PrRow } from '../../../src/types.ts';
 import { getJson, postJson, useStream, useTick } from '../api.ts';
 import { Segmented } from './SettingsControls.tsx';
-import { clockTime, SeverityCounts, timeAgo } from '../ui.tsx';
+import { clockTime, Pager, scrollToSection, SeverityCounts, timeAgo } from '../ui.tsx';
 
 const REVIEW_LABEL: Record<MyReview, string> = {
   approved: 'Approved',
@@ -12,6 +12,8 @@ const REVIEW_LABEL: Record<MyReview, string> = {
   dry_run: 'Dry run, not posted',
   not_posted: 'Not on GitHub',
 };
+
+const PAGE_SIZE = 25;
 
 type Filter = 'all' | 'open' | 'approved' | 'changes_requested' | 'commented' | 'merged' | 'closed';
 const FILTERS: [Filter, string][] = [
@@ -122,7 +124,20 @@ export function PrsPage() {
   const { prs, loaded, error, reload } = usePrs();
   const [filter, setFilter] = useState<Filter>('all');
   const open = prs.filter((p) => p.state === 'open' || p.state === 'unknown');
-  const shown = prs.filter((p) => matches(p, filter));
+  const matching = prs.filter((p) => matches(p, filter));
+  const [page, setPage] = useState(1);
+  // A new filter starts at its first page; a shrinking list never leaves you past its end.
+  const pages = Math.max(1, Math.ceil(matching.length / PAGE_SIZE));
+  const current = Math.min(page, pages);
+  const shown = matching.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const pick = (f: Filter) => {
+    setFilter(f);
+    setPage(1);
+  };
+  const goTo = (p: number) => {
+    setPage(p);
+    scrollToSection('reviewed-prs');
+  };
   const anyMerge = prs.some((p) => p.merge.status !== 'off');
 
   return (
@@ -144,12 +159,12 @@ export function PrsPage() {
         ))}
       </section>
 
-      <section>
+      <section id="reviewed-prs">
         <div className="row wrap-row prs-head">
           <h2>
             Reviewed pull requests {prs.length > 0 && <span className="count">{prs.length}</span>}
           </h2>
-          <Segmented label="Show" value={filter} onChange={setFilter} options={FILTERS} />
+          <Segmented label="Show" value={filter} onChange={pick} options={FILTERS} />
         </div>
         <p className="small muted">Your review as it stands on GitHub now, including reviews you submitted or changed yourself.</p>
         {error && <p className="error">{error}</p>}
@@ -206,6 +221,7 @@ export function PrsPage() {
         ) : (
           <p className="empty">{!loaded ? 'Loading…' : prs.length ? 'No pull requests match.' : 'PRs show up here once they have a finished review.'}</p>
         )}
+        <Pager page={current} size={PAGE_SIZE} total={matching.length} onPage={goTo} label="Pull request pages" />
       </section>
     </div>
   );

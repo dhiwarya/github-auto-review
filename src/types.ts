@@ -368,6 +368,14 @@ export interface JobDetail {
   steps: Step[];
 }
 
+// One page of finished jobs for the Queue's history.
+export interface HistoryPage {
+  jobs: Job[];
+  total: number;
+  page: number; // 1-based, clamped to the last page
+  size: number;
+}
+
 export type LeaderboardKind = 'models' | 'repos' | 'authors';
 
 export interface LeaderboardRow {

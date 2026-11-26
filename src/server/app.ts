@@ -17,7 +17,7 @@ import type { PrTracker } from '../jobs/prs.ts';
 import type { Worker } from '../jobs/worker.ts';
 import type { Router } from '../llm/router.ts';
 import { PostRefused, type ReviewPipeline } from '../review/pipeline.ts';
-import { REVIEW_TYPES, type Job, type JobDetail, type JobState, type LeaderboardKind, type Overview, type StreamMessage } from '../types.ts';
+import { REVIEW_TYPES, type HistoryPage, type Job, type JobDetail, type JobState, type LeaderboardKind, type Overview, type StreamMessage } from '../types.ts';
 import { leaderboard } from './leaderboard.ts';
 
 interface Deps {
@@ -95,9 +95,27 @@ export async function startServer(deps: Deps) {
 
   app.get('/api/overview', async () => overview(deps));
 
-  app.get<{ Querystring: { limit?: string } }>('/api/jobs', async (req) => {
+  // Lists leave out the long text (the review, its policy and report); a job's page loads it.
+  const light = (j: Job): Job => {
+    const { review_body: _body, review_policy: _policy, review_report: _report, ...rest } = db.withCounts(j);
+    return { ...rest, review_body: null };
+  };
+  const ACTIVE_SQL = `state IN ('queued', 'running', 'waiting')`;
+
+  // ?active=1: only queued, running and waiting jobs.
+  app.get<{ Querystring: { limit?: string; active?: string } }>('/api/jobs', async (req) => {
     const limit = Math.min(Number(req.query.limit ?? 200) || 200, 1000);
-    return db.all<Job>('SELECT * FROM jobs ORDER BY id DESC LIMIT ?', limit).map((j) => db.withCounts(j));
+    return db.all<Job>(`SELECT * FROM jobs ${req.query.active === '1' ? `WHERE ${ACTIVE_SQL}` : ''} ORDER BY id DESC LIMIT ?`, limit).map(light);
+  });
+
+  // Finished jobs, newest first, one page at a time.
+  app.get<{ Querystring: { page?: string; size?: string } }>('/api/history', async (req) => {
+    const size = Math.min(Math.max(Number(req.query.size) || 25, 1), 200);
+    const total = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE NOT ${ACTIVE_SQL}`)!.n;
+    const pages = Math.max(1, Math.ceil(total / size));
+    const page = Math.min(Math.max(Math.floor(Number(req.query.page) || 1), 1), pages);
+    const jobs = db.all<Job>(`SELECT * FROM jobs WHERE NOT ${ACTIVE_SQL} ORDER BY id DESC LIMIT ? OFFSET ?`, size, (page - 1) * size).map(light);
+    return { jobs, total, page, size } satisfies HistoryPage;
   });
 
   app.get<{ Params: { id: string } }>('/api/jobs/:id', async (req, reply) => {

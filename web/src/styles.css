@@ -1485,3 +1485,24 @@ textarea {
   font-family: var(--mono);
   font-size: 13px;
 }
+
+/* Pagination under long tables */
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 12px;
+}
+.pager-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.pager-buttons .btn {
+  min-width: 32px;
+  font-variant-numeric: tabular-nums;
+}
