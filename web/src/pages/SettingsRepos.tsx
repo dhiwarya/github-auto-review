@@ -232,12 +232,12 @@ function RepoForm({ i, repo, draft, saved, edit, errorFor, seen, onRemoved }: Fo
         )}
         {repo.approval.enabled && !strict && (
           <Field
-            label="Approve when confidence is at least"
-            hint={
+            label="With findings open, approve when confidence is at least"
+            hint={`${
               repo.approval.minConfidence === 'high'
                 ? 'High: no blockers or majors open, no open questions, requirements match, and every review is sure.'
                 : 'Medium also approves with majors open, open questions, partly matching requirements, or a large change.'
-            }
+            } A review with no findings open approves whatever its confidence.`}
           >
             <Segmented
               label="Minimum confidence"

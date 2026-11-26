@@ -167,7 +167,7 @@ Every review gets a confidence level: how sure it is that nothing blocks the PR.
 | Low | The code doesn't match the linked issue, or the PR tried to get a credential out of the reviewer |
 | Either | A review pass rates its own confidence lower, saying what it couldn't check within the PR's job |
 
-A published review **approves the PR** when no blocker is open (in this review or an earlier one on the PR) and the confidence is at least the minimum set in Settings (high by default). It never approves a draft (you decide when you submit it), a draft PR, your own PR, a PR with commits newer than the review, or one where you requested changes yourself. A change request the app published from a re-check doesn't count as yours: approving replaces it. Otherwise it posts a comment review, and the dashboard says why it didn't approve. An approval counts toward branch protection, so the PR may become mergeable.
+A published review **approves the PR** when nothing is open, in this review or an earlier one on the PR, whatever its confidence. With findings open, it approves when none is a blocker and the confidence is at least the minimum set in Settings (high by default). A PR that tried to get a credential out of the reviewer is never approved, and Strict reviews keep their own rules. It never approves a draft (you decide when you submit it), a draft PR, your own PR, a PR with commits newer than the review, or one where you requested changes yourself. A change request the app published from a re-check doesn't count as yours: approving replaces it. Otherwise it posts a comment review, and the dashboard says why it didn't approve. An approval counts toward branch protection, so the PR may become mergeable.
 
 ### Auto-merge
 
@@ -308,7 +308,7 @@ Settings come in two parts.
 | Repository | Review pull requests here | On. Off keeps the settings and context without reviewing |
 | Posting to GitHub | Dry run | On |
 | | How reviews are posted | Draft |
-| | Approve PRs that have no blockers | On, when confidence is at least high |
+| | Approve PRs that have no blockers | On: always with no findings open; with findings, when confidence is at least high |
 | Auto-merge | Merge approved PRs | Off; when on: squash, 10 minutes after the approval, branch kept |
 | Reviews | Review profile | Standard; select Strict for independent review and required coverage |
 | | After the author pushes new commits | Check the fixes (one run); a full review after a big change or a rebase |

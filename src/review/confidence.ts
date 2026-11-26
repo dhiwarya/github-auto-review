@@ -26,6 +26,8 @@ export interface Assessment {
   reasons: string[]; // what lowered it
 }
 
+export const INJECTION_NOTE = 'The PR tried to get a credential out of the reviewer';
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 export function assess(i: ConfidenceInput): Assessment {
@@ -48,7 +50,7 @@ export function assess(i: ConfidenceInput): Assessment {
   if (i.large) lower('medium', 'Large change: only the highest risks were reviewed');
   if (i.truncated) lower('medium', 'The diff was too long to send in full');
   if (i.coverageIncomplete) lower('low', 'Required Strict coverage or stages are incomplete');
-  if (i.injection) lower('low', 'The PR tried to get a credential out of the reviewer');
+  if (i.injection) lower('low', INJECTION_NOTE);
   for (const p of i.passes) {
     if (p.level !== 'high') lower(p.level, p.reason.trim() || `A review pass rated its confidence ${p.level}`);
   }

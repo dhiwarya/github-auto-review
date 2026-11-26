@@ -15,7 +15,7 @@ import { myVerdict, PendingReviewExists, isOwnComment, postReview, type InlineCo
 import { NoProviderAvailable, type Router } from '../llm/router.ts';
 import { containsSecret, ownSecrets } from '../secrets.ts';
 import { PASS_OF, REVIEW_TYPES, reviewsOf, type Confidence, type Evidence, type Finding, type Job, type PostPreview, type Provider, type ReviewMode, type ReviewType } from '../types.ts';
-import { assess, atLeast, openBlockers } from './confidence.ts';
+import { assess, atLeast, INJECTION_NOTE, openBlockers } from './confidence.ts';
 import { buildContext, docsSection, fence, openFindingsSection, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
 import { countsLine, distinctQuestions, inlineBody, renderReview, type Decision, type ReviewParts } from './format.ts';
 import { consistencyInstructions, fixCheckInstructions, mainInstructions, recheckInstructions, securityInstructions, verifyInstructions } from './prompts.ts';
@@ -712,13 +712,19 @@ export class ReviewPipeline {
   private async whyNotApprove(job: Job, pr: PrInfo, posted: Finding[]): Promise<string[]> {
     const { enabled, minConfidence } = this.cfg.forRepo(job.repo).approval;
     const frozen = readPolicy(job)?.settings.approval;
+    const strict = this.cfg.forRepo(job.repo).profile === 'strict' || readPolicy(job)?.settings.profile === 'strict';
     const reasons: string[] = [];
     if (!enabled || frozen?.enabled === false) reasons.push('Approving is turned off for this repo in Settings');
     const findings = [...posted, ...this.previousFindings(job, true)];
     const blockers = openBlockers(findings);
     if (blockers) reasons.push(`${blockers} blocker${blockers === 1 ? '' : 's'} still open`);
+    // Nothing open, in this review or an earlier one: confidence doesn't hold it back. It still
+    // does when there is something open, and a PR that tried to get a credential out of the
+    // reviewer is never approved.
+    const open = findings.filter((f) => f.status !== 'dropped').length;
+    if (job.confidence_notes?.includes(INJECTION_NOTE)) reasons.push(INJECTION_NOTE);
     if (!job.confidence) reasons.push('This review has no confidence level (it was made before approvals existed)');
-    else if (!atLeast(job.confidence, minConfidence) || (frozen && !atLeast(job.confidence, frozen.minConfidence))) reasons.push(`Confidence is ${job.confidence}; approving needs ${minConfidence === 'high' || frozen?.minConfidence === 'high' ? 'high' : 'medium'}`);
+    else if ((open || strict) && (!atLeast(job.confidence, minConfidence) || (frozen && !atLeast(job.confidence, frozen.minConfidence)))) reasons.push(`Confidence is ${job.confidence}; approving needs ${minConfidence === 'high' || frozen?.minConfidence === 'high' ? 'high' : 'medium'}`);
     reasons.push(...strictApprovalBlocks(job, findings, this.cfg.forRepo(job.repo).profile === 'strict'));
     if (pr.draft) reasons.push('The PR is still a draft');
     if (pr.author.toLowerCase() === this.gh.me.toLowerCase()) reasons.push("GitHub doesn't let you approve your own PR");

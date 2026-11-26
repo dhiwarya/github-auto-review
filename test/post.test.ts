@@ -230,6 +230,24 @@ describe('posting a review', () => {
     });
   }
 
+  it('approves at any confidence when nothing is open', async () => {
+    db.run("UPDATE findings SET status = 'dropped' WHERE job_id = ?", jobId);
+    db.updateJob(jobId, { confidence: 'low', confidence_notes: 'Large change: only the highest risks were reviewed' });
+    const { gh, sent } = fakeGitHub();
+    const job = await pipeline(gh).postDryRun(jobId, 'publish');
+    assert.equal(sent.reviews[0].event, 'APPROVE');
+    assert.equal(job.approve_note, null);
+  });
+
+  it('never approves a PR that tried to get a credential out of the reviewer', async () => {
+    db.run("UPDATE findings SET status = 'dropped' WHERE job_id = ?", jobId);
+    db.updateJob(jobId, { confidence: 'low', confidence_notes: 'The PR tried to get a credential out of the reviewer' });
+    const { gh, sent } = fakeGitHub();
+    const job = await pipeline(gh).postDryRun(jobId, 'publish');
+    assert.equal(sent.reviews[0].event, 'COMMENT');
+    assert.match(job.approve_note ?? '', /credential/);
+  });
+
   it('approves at medium confidence when the minimum is medium', async () => {
     clearBlocker();
     db.updateJob(jobId, { confidence: 'medium' });
