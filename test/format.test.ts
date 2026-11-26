@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { authorReasons, countsLine, distinctQuestions, inlineBody, recheckBody, summaryBody, type Decision, type SummaryInput } from '../src/review/format.ts';
+import { authorReasons, countsLine, distinctQuestions, fixCheckBody, inlineBody, recheckBody, summaryBody, type Decision, type FixCheckInput, type SummaryInput } from '../src/review/format.ts';
 import type { Finding, Severity } from '../src/types.ts';
 
 const finding = (id: number, severity: Severity, over: Partial<Finding> = {}) =>
@@ -120,5 +120,33 @@ describe('why it is not approving, for the author', () => {
     const body = recheckBody({ headSha: 'a'.repeat(40), jobId: 3, summary: 'One finding is still there.', open: [{ finding: finding(1, 'blocker', { title: 'Crash', file: 'a.js' }), reason: 'still crashes on empty input' }], resolved: [{ finding: finding(2, 'nit', { title: 'Typo', file: 'b.js' }), reason: 'Fixed in the README.' }] }, decide({ requestChanges: true }));
     assert.match(body, /^\*\*No new commits since my last review\.\*\* 1 finding is still open: 1 blocker\.\n\nOne finding is still there\.\n\n\*\*Still open\*\*\n\n- \*\*Blocker:\*\* Crash \(`a\.js:3`\)\n {2}Still crashes on empty input\.\n\n\*\*Resolved\*\*\n\n- Typo \(`b\.js`\): Fixed in the README\./);
     assert.match(body, /<!-- ai-review sha=a{40} job=3 recheck -->\n\n<sub>Re-check of `aaaaaaa`<\/sub>$/);
+  });
+});
+
+describe('a follow-up check of the fixes', () => {
+  const fix = (over: Partial<FixCheckInput> = {}, d: Partial<Decision> = {}) =>
+    fixCheckBody({ headSha: 'a'.repeat(40), sinceSha: 'b'.repeat(40), jobId: 9, summary: '', findings: [], open: [], resolved: [], excluded: [], ...over }, decide(d));
+  const crash = finding(1, 'blocker', { title: 'Crash on empty input', file: 'a.js' });
+  const typo = finding(2, 'minor', { title: 'Typo in error', file: 'b.js' });
+
+  it('says what is fixed and what is still open, and lists the reasons', () => {
+    const body = fix({ open: [{ finding: crash, reason: 'still crashes when the list is empty' }], resolved: [{ finding: typo, reason: 'Fixed.' }] }, { requestChanges: true, notes: ['1 blocker still open'] });
+    assert.match(body, /^\*\*Needs changes\.\*\* 1 of 2 findings from my last review is fixed; 1 is still open: 1 blocker\.\n\n\*\*Still open\*\*\n\n- \*\*Blocker:\*\* Crash on empty input \(`a\.js:3`\)\n {2}Still crashes when the list is empty\.\n\n\*\*Fixed\*\*\n\n- Typo in error \(`b\.js`\): Fixed\./);
+    assert.doesNotMatch(body, /Not approving yet/, 'the open blocker is already listed');
+    assert.match(body, /<!-- ai-review sha=a{40} job=9 -->\n\n<sub>Follow-up check of `aaaaaaa`: the changes since `bbbbbbb`<\/sub>$/);
+    assert.doesNotMatch(body, EMOJI);
+  });
+
+  it('names serious problems the new commits add', () => {
+    const fresh = [finding(3, 'major', { title: 'Leaks the handle' }), finding(4, 'blocker', { status: 'summary', line: null, title: 'Drops the lock' })];
+    const body = fix({ findings: fresh, resolved: [{ finding: crash, reason: '' }] });
+    assert.match(body, /^\*\*Needs changes\.\*\* The finding from my last review is fixed\. The new commits add 1 blocker, 1 major\. Details are in the comments on the code\./);
+    assert.match(body, /\*\*New in these commits\*\*\n\n- \*\*Blocker:\*\* Drops the lock \(`src\/a\.ts`\)\n {2}It breaks when empty\. Check for empty\.\n {2}<!-- ai-finding:4 -->/);
+  });
+
+  it('approves when everything is fixed and nothing new is serious', () => {
+    assert.match(fix({ resolved: [{ finding: crash, reason: '' }, { finding: typo, reason: '' }] }, { approve: true }), /^\*\*Approved\.\*\* All 2 findings from my last review are fixed\./);
+    assert.match(fix({}, { approve: true, mode: 'draft' }), /^\*\*Looks good\.\*\* Nothing from my last review was open\./);
+    assert.match(fix({ open: [{ finding: typo, reason: '' }] }, { notes: ['The PR is still a draft'] }), /^\*\*Looks good, but I'm not approving yet\.\*\* The finding from my last review is still open: 1 minor\.[\s\S]*\*\*Not approving yet\.\*\* One thing is still open:\n\n- The PR is still marked as a draft\./);
   });
 });

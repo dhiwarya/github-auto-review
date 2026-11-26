@@ -532,6 +532,15 @@ export function ProcessView({ detail }: { detail: JobDetail }) {
         <Stage n={n++} title="Re-check of open findings" state={passState(attempts('recheck'), active)}>
           <PassCard title="Re-check" attempts={attempts('recheck')} jobActive={active} emptyNote="No findings were open, so no model ran." />
         </Stage>
+      ) : attempts('fixcheck').length ? (
+        <>
+          <Stage n={n++} title="Follow-up check of the fixes" state={passState(attempts('fixcheck'), active)}>
+            <PassCard title="Earlier findings, and serious problems in the new commits" attempts={attempts('fixcheck')} jobActive={active} emptyNote="Starts once the evidence is ready." />
+          </Stage>
+          <Stage n={n++} title="Double-check" state={passState(attempts('verify'), active)}>
+            <PassCard title="Double-check of blockers and majors" attempts={attempts('verify')} jobActive={active} emptyNote={active ? 'Runs if the check raised a new blocker or major.' : 'Not needed: no new blocker or major.'} />
+          </Stage>
+        </>
       ) : strict ? (
         <>
           {strictPurposes.map((p) => <Stage key={p} n={n++} title={p.split(':').slice(1, -1).join(' / ')} state={passState(attempts(p), active)}><PassCard title="Model activity and usage" attempts={attempts(p)} jobActive={active} emptyNote="Waiting for this stage." /></Stage>)}

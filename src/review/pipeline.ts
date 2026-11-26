@@ -16,11 +16,11 @@ import { NoProviderAvailable, type Router } from '../llm/router.ts';
 import { containsSecret, ownSecrets } from '../secrets.ts';
 import { PASS_OF, REVIEW_TYPES, reviewsOf, type Confidence, type Evidence, type Finding, type Job, type PostPreview, type Provider, type ReviewMode, type ReviewType } from '../types.ts';
 import { assess, atLeast, openBlockers } from './confidence.ts';
-import { buildContext, docsSection, fence, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
+import { buildContext, docsSection, fence, openFindingsSection, recheckPrompt, refsEvidence, type ReviewContext } from './context.ts';
 import { countsLine, distinctQuestions, inlineBody, renderReview, type Decision, type ReviewParts } from './format.ts';
-import { consistencyInstructions, mainInstructions, recheckInstructions, securityInstructions, verifyInstructions } from './prompts.ts';
+import { consistencyInstructions, fixCheckInstructions, mainInstructions, recheckInstructions, securityInstructions, verifyInstructions } from './prompts.ts';
 import { relatedAlerts, relatedCandidates, relatedSection, type RelatedCandidate } from './related.ts';
-import { ConsistencyOut, consistencySchema, RecheckOut, recheckSchema, ReviewOut, reviewSchema, VerifyOut, verifySchema } from './schema.ts';
+import { ConsistencyOut, consistencySchema, FixCheckOut, fixCheckSchema, RecheckOut, recheckSchema, ReviewOut, reviewSchema, VerifyOut, verifySchema } from './schema.ts';
 import { addedTextOf, lowerSeverity, minSeverity, placeFindings, scrubText, type Candidate } from './validate.ts';
 import { POLICY_VERSION, hasStrictCoverage, readPolicy, readReport, strictApprovalBlocks } from './policy.ts';
 import { runStrictReview, StrictReviewWaiting, StrictReviewIncomplete } from './strict.ts';
@@ -117,13 +117,26 @@ export class ReviewPipeline {
       this.step(job, 'Reading the PR, linked issues and guidelines', 18);
       const previous = this.previousFindings(job);
       const priorJob = strict ? this.db.jobsForPr(job.repo, job.pr_number).find((j) => j.id !== job.id && j.state === 'done' && j.dry_run === job.dry_run) : null;
-      const ctx = await buildContext(this.gh, cfg, pr, job.since_sha, previous, this.cache, {
+      let ctx = await buildContext(this.gh, cfg, pr, job.since_sha, previous, this.cache, {
         snapshot: strict ? this.db.contextSnapshot(job.id) : null,
         recheckOnly: strict && job.kind === 'recheck',
         priorReview: priorJob?.review_body && priorJob.confidence !== 'high' ? { id: priorJob.id, text: `${priorJob.confidence_notes ?? ''}\n\n${priorJob.review_body}` } : undefined,
       });
       ctx.recovery = recovery;
       ctx.recheckOnly = strict && job.kind === 'recheck';
+      // After new commits, one run checks the fixes instead of every review running again.
+      // A big change or a rewritten history gets a full review of the whole PR.
+      let fixCheck = false;
+      if (!strict && job.kind === 'review' && job.since_sha && cfg.followUp === 'fixes') {
+        const full = fullReviewReason(ctx, pr, job.since_sha);
+        if (full) {
+          this.db.event(job.id, `Reviewing the whole PR again: ${full}`);
+          job = this.db.updateJob(job.id, { since_sha: null });
+          if (ctx.incremental) ctx = await buildContext(this.gh, cfg, pr, null, previous, this.cache);
+        } else {
+          fixCheck = true;
+        }
+      }
       if (ctx.sourceSnapshot) {
         this.db.saveContextSnapshot(job.id, ctx.sourceSnapshot);
         await materializeSources(ctx.sourceSnapshot, checkout.dir);
@@ -132,7 +145,7 @@ export class ReviewPipeline {
       this.db.setEvidence(job.id, ctx.evidence);
       this.db.event(
         job.id,
-        `${ctx.incremental ? 'Follow-up review of new commits' : 'Full review'}: ${ctx.reviewFiles.length} files, ` +
+        `${fixCheck ? 'Follow-up check of the fixes' : ctx.incremental ? 'Follow-up review of new commits' : 'Full review'}: ${ctx.reviewFiles.length} files, ` +
           `${ctx.changedLines} changed lines, ${ctx.issues.length} linked issue(s)${ctx.large ? strict ? ', Strict batch review' : ', large-PR mode' : ''}`,
       );
 
@@ -142,7 +155,7 @@ export class ReviewPipeline {
       // Strict always reviews code, security and requirements itself, with both providers.
       // Of the consistency review it adds what Strict doesn't cover: the docs and other open PRs.
       const chosen = reviewsOf(job);
-      const reviews: ReviewType[] = strict ? REVIEW_TYPES.filter((r) => r !== 'consistency' || (chosen.includes(r) && !ctx.recheckOnly)) : chosen;
+      const reviews: ReviewType[] = fixCheck ? [] : strict ? REVIEW_TYPES.filter((r) => r !== 'consistency' || (chosen.includes(r) && !ctx.recheckOnly)) : chosen;
       // The consistency review also gets the docs and the other open PRs touching the same files.
       let related: RelatedCandidate[] = [];
       let consistencyPrompt = ctx.prompt;
@@ -173,7 +186,7 @@ export class ReviewPipeline {
         security: { instructions: securityInstructions(ctx.me), prompt: ctx.prompt, schema: reviewSchema },
         consistency: { instructions: consistencyInstructions(ctx.me, { requirements: !strict }), prompt: consistencyPrompt, schema: consistencySchema },
       };
-      this.step(job, strict ? `Strict review: code, security and an independent review${reviews.includes('consistency') ? ', then docs and other PRs' : ''}` : `Reviewing: ${reviews.join(', ')}`, 25);
+      this.step(job, fixCheck ? `Checking ${previous.length} earlier finding(s) against the new commits` : strict ? `Strict review: code, security and an independent review${reviews.includes('consistency') ? ', then docs and other PRs' : ''}` : `Reviewing: ${reviews.join(', ')}`, 25);
       const strictResult = strict ? await runStrictReview({ job, ctx, cfg, db: this.db, router: this.router, task, placeOpts }) : null;
       // In Strict the engine above did code and security; only the consistency extras are left.
       const separate = strict ? reviews.filter((r) => r === 'consistency') : reviews;
@@ -186,20 +199,24 @@ export class ReviewPipeline {
           return { type, res, out: parseReview(res.output, type) };
         }),
       );
+      const fix = fixCheck ? await this.fixCheck(job, ctx, previous, task, cfg) : null;
       const strictOut = strictResult ? parseReview(strictResult.mainOut, 'strict') : null;
-      const outs: ReviewOut[] = [...(strictOut ? [strictOut] : []), ...ran.map((r) => r.out)];
+      const outs: ReviewOut[] = [...(strictOut ? [strictOut] : []), ...(fix ? [fix.out] : []), ...ran.map((r) => r.out)];
       const picks = ConsistencyOut.safeParse(ran.find((r) => r.type === 'consistency')?.res.output);
-      const spec = strictOut?.spec_alignment ?? ran.find((r) => r.type === 'consistency')?.out.spec_alignment ?? { status: 'not_checked' as const, notes: '' };
+      // A fix check doesn't re-read the linked issue: the last review's verdict on it stands.
+      const lastDone = fix ? this.db.jobsForPr(job.repo, job.pr_number).find((j) => j.id !== job.id && j.state === 'done' && j.head_sha === job.since_sha) : undefined;
+      const spec = strictOut?.spec_alignment ?? ran.find((r) => r.type === 'consistency')?.out.spec_alignment ?? { status: lastDone?.spec_status ?? 'not_checked', notes: '' };
       const ranLine = ran.map((r) => `${r.type} review (${r.res.provider} ${r.res.model ?? '(default model)'}): ${r.out.findings.length} finding(s)`).join('. ');
       this.db.event(
         job.id,
         [
           strictResult ? `Strict review: ${strictResult.report.stages.length} stages, ${strictResult.candidates.length} proposed finding(s), ${strictResult.report.complete ? 'coverage complete' : 'incomplete'}` : '',
+          fix ? `Follow-up check (${fix.provider} ${fix.model ?? '(default model)'}): ${fix.out.resolved_previous_ids.length} of ${previous.length} earlier finding(s) fixed, ${fix.out.findings.length} new serious finding(s)` : '',
           ranLine.replace(/^./, (c) => c.toUpperCase()),
         ].filter(Boolean).join('. ') + '.',
       );
 
-      let candidates: Candidate[] = [...(strictResult?.candidates ?? []), ...ran.flatMap((r) => r.out.findings.map((f) => toCandidate(f, r.type, r.res.provider, r.res.model)))];
+      let candidates: Candidate[] = [...(strictResult?.candidates ?? []), ...(fix ? fix.out.findings.map((f) => ({ ...toCandidate(f, 'code', fix.provider, fix.model), category: f.category, pass: 'fixcheck' as const })) : []), ...ran.flatMap((r) => r.out.findings.map((f) => toCandidate(f, r.type, r.res.provider, r.res.model)))];
 
       if (!strict && cfg.models.doubleCheck && candidates.some((c) => c.severity === 'blocker' || c.severity === 'major')) {
         this.step(job, 'Double-checking blockers and majors', 72);
@@ -260,8 +277,8 @@ export class ReviewPipeline {
       };
       // One summary for the author: Strict's own, else the code review's, else whichever ran.
       // The others stay in the log.
-      const written = [...(strictOut ? [{ type: 'strict', text: clean(strictOut.summary) }] : []), ...ran.map((r) => ({ type: r.type as string, text: clean(r.out.summary) }))];
-      const lead = ['strict', 'code', 'consistency', 'security'].map((t) => written.find((w) => w.type === t && w.text.trim())).find(Boolean);
+      const written = [...(strictOut ? [{ type: 'strict', text: clean(strictOut.summary) }] : []), ...(fix ? [{ type: 'fixcheck', text: clean(fix.out.summary) }] : []), ...ran.map((r) => ({ type: r.type as string, text: clean(r.out.summary) }))];
+      const lead = ['strict', 'fixcheck', 'code', 'consistency', 'security'].map((t) => written.find((w) => w.type === t && w.text.trim())).find(Boolean);
       for (const w of written) if (w !== lead && w.text.trim()) this.db.event(job.id, `${w.type[0].toUpperCase()}${w.type.slice(1)} review: ${w.text}`);
       const allQuestions = outs.flatMap((o) => o.questions_for_author);
       const questions = distinctQuestions(allQuestions.map(clean), strict ? Infinity : 4);
@@ -273,7 +290,13 @@ export class ReviewPipeline {
       if (smuggled) {
         this.db.event(job.id, 'A model put a credential that is not in the PR into its summary or questions. It was redacted; check the PR for prompt injection.', 'warn');
       }
-      const parts: ReviewParts = ctx.recheckOnly
+      const reasonOf = (f: Finding) => ({ finding: f, reason: fix?.reasons.get(f.id) ? clean(fix.reasons.get(f.id)!) : '' });
+      const parts: ReviewParts = fix
+        ? {
+            kind: 'fixcheck', headSha: job.head_sha, sinceSha: job.since_sha!, jobId: job.id, summary: lead?.text ?? '', findings: posted,
+            open: previous.filter((f) => !resolvedIds.has(f.id)).map(reasonOf), resolved: resolved.map(reasonOf), excluded: ctx.excluded,
+          }
+        : ctx.recheckOnly
         ? {
             kind: 'recheck', headSha: job.head_sha, jobId: job.id, summary: lead?.text ?? '', complete: strictResult!.report.complete,
             open: previous.filter((f) => !resolvedIds.has(f.id)).map((finding) => ({ finding, reason: '' })),
@@ -305,7 +328,8 @@ export class ReviewPipeline {
         findings: posted,
         openEarlier: previous.filter((f) => !resolvedIds.has(f.id)),
         // Strict assesses the linked issue itself, so nothing that affects confidence is skipped.
-        notRun: strict ? [] : REVIEW_TYPES.filter((r) => !reviews.includes(r)),
+        // A fix check covers only the new commits; the whole PR had its full review before.
+        notRun: strict || fix ? [] : REVIEW_TYPES.filter((r) => !reviews.includes(r)),
         specStatus: spec.status,
         questions: questions.length,
         large: !strict && ctx.large,
@@ -424,6 +448,36 @@ export class ReviewPipeline {
       throw signal.reason;
     }
     return checkout;
+  }
+
+  // One run for a follow-up after new commits: a verdict on each finding still open from
+  // earlier reviews, and any serious problem the new commits add. A finding without a
+  // verdict stays open.
+  private async fixCheck(job: Job, ctx: ReviewContext, open: Finding[], task: { cwd: string; workDir: string; timeoutMs: number; signal: AbortSignal }, cfg: RepoSettings) {
+    const owners = new Set(open.map((f) => f.job_id));
+    const jobs = this.db.jobsForPr(job.repo, job.pr_number);
+    const since = jobs.filter((j) => owners.has(j.id)).map((j) => j.created_at).sort()[0] ?? jobs.find((j) => j.id !== job.id && j.state === 'done')?.created_at ?? job.created_at;
+    const discussion = await listDiscussion(this.gh, job.repo, job.pr_number, since).catch((err) => {
+      this.db.event(job.id, `Couldn't read the PR discussion (${err instanceof Error ? err.message : err}); checking without it`, 'warn');
+      return [];
+    });
+    const prompt = `${ctx.prompt}\n\n${openFindingsSection(open, discussion)}`;
+    this.db.setEvidence(job.id, { ...ctx.evidence, promptChars: prompt.length });
+    const res = await this.router.run(job.id, 'fixcheck', { ...task, instructions: fixCheckInstructions(this.gh.me), prompt, schema: fixCheckSchema }, { config: cfg });
+    const parsed = FixCheckOut.safeParse(res.output);
+    if (!parsed.success) throw new Error(`the follow-up check returned an unexpected shape: ${parsed.error.issues[0]?.message ?? ''}`);
+    const ids = new Set(open.map((f) => f.id));
+    const verdicts = parsed.data.verdicts.filter((v) => ids.has(v.id));
+    const out: ReviewOut = {
+      summary: parsed.data.summary,
+      spec_alignment: { status: 'not_checked', notes: '' },
+      // Only serious problems are raised in a follow-up; anything smaller waits for a full review.
+      findings: parsed.data.findings.filter((f) => f.severity === 'blocker' || f.severity === 'major'),
+      questions_for_author: [],
+      resolved_previous_ids: verdicts.filter((v) => v.status === 'resolved').map((v) => v.id),
+      review_confidence: parsed.data.review_confidence,
+    };
+    return { out, provider: res.provider, model: res.model, reasons: new Map(verdicts.map((v) => [v.id, v.reason])) };
   }
 
   // The review was requested again with no new commits. Nothing new is raised on code that
@@ -856,4 +910,17 @@ function toCandidate(f: ReviewOut['findings'][number], type: ReviewType, model: 
     verified_by: null,
     verify_reason: null,
   };
+}
+
+// Above this many changed lines, new commits get a full review of the whole PR instead of a
+// check of the fixes. So do commits that change most of a PR of some size.
+export const FIX_CHECK_MAX_LINES = 400;
+const FIX_CHECK_HALF_FROM = 100;
+
+// Why a follow-up should review the whole PR again, or null when checking the fixes is enough.
+export function fullReviewReason(ctx: Pick<ReviewContext, 'incremental' | 'changedLines'>, pr: Pick<PrInfo, 'additions' | 'deletions'>, sinceSha: string): string | null {
+  if (!ctx.incremental) return `the branch was rebased or force-pushed since ${sinceSha.slice(0, 7)}`;
+  if (ctx.changedLines > FIX_CHECK_MAX_LINES) return `the new commits change ${ctx.changedLines} lines`;
+  if (ctx.changedLines > FIX_CHECK_HALF_FROM && ctx.changedLines * 2 > pr.additions + pr.deletions) return 'the new commits change more than half of the PR';
+  return null;
 }

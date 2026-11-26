@@ -10,7 +10,7 @@ import { RepoCache } from '../src/git/mirror.ts';
 import type { GitHub } from '../src/github/client.ts';
 import { isOwnComment } from '../src/github/publish.ts';
 import type { Router, RouterTask } from '../src/llm/router.ts';
-import { ReviewPipeline } from '../src/review/pipeline.ts';
+import { fullReviewReason, ReviewPipeline } from '../src/review/pipeline.ts';
 import { consistencyInstructions, mainInstructions, strictInstructions } from '../src/review/prompts.ts';
 import { relatedAlerts, type RelatedCandidate } from '../src/review/related.ts';
 import { SettingsStore } from '../src/settings.ts';
@@ -45,8 +45,18 @@ function makeRemotes(root: string) {
   branch('pr8', 'app.js', 'export const div = (a, b) => a / b;\n');
   branch('pr9', 'app.js', 'export const pow = (a, b) => a ** b;\n');
   branch('pr10', 'other.js', 'export const z = 2;\n');
+  // Follow-ups to PR 7: a small fix, and a big new change.
+  const onTop = (name: string, file: string, text: string) => {
+    git('checkout', '-q', '-b', name, 'pr7');
+    fs.appendFileSync(path.join(work, file), text);
+    git('add', '.');
+    git('commit', '-qm', name);
+    return git('rev-parse', 'HEAD');
+  };
+  const fixed = onTop('pr11', 'app.js', 'export const safeDiv = (a, b) => (b === 0 ? null : a / b);\n');
+  const grown = onTop('pr12', 'big.js', Array.from({ length: 450 }, (_, i) => `export const v${i} = ${i};\n`).join(''));
   execFileSync('git', ['init', '-q', '--bare', remote]);
-  git('push', '-q', remote, 'main:refs/heads/main', 'pr7:refs/pull/7/head', 'pr8:refs/pull/8/head', 'pr9:refs/pull/9/head', 'pr10:refs/pull/10/head');
+  git('push', '-q', remote, 'main:refs/heads/main', 'pr7:refs/pull/7/head', 'pr8:refs/pull/8/head', 'pr9:refs/pull/9/head', 'pr10:refs/pull/10/head', 'pr11:refs/pull/11/head', 'pr12:refs/pull/12/head');
 
   const docsWork = path.join(root, 'docs-work');
   const docsRemote = path.join(root, 'handbook.git');
@@ -59,10 +69,10 @@ function makeRemotes(root: string) {
   execFileSync('git', ['init', '-q', '--bare', docsRemote]);
   exec(docsWork, 'push', '-q', docsRemote, 'main:refs/heads/main');
   execFileSync('git', ['--git-dir', docsRemote, 'symbolic-ref', 'HEAD', 'refs/heads/main']);
-  return { remote, docsRemote, base, head };
+  return { remote, docsRemote, base, head, fixed, grown };
 }
 
-function fakeGitHub(base: string, head: string) {
+function fakeGitHub(base: string, head: string, size = { additions: 1, deletions: 0 }, extraFiles: unknown[] = []) {
   const pr = (number: number, title: string, updated: string) => ({ number, title, html_url: `https://github.com/acme/api/pull/${number}`, user: { login: 'someone' }, draft: false, updated_at: updated });
   return {
     me: 'me',
@@ -79,12 +89,14 @@ function fakeGitHub(base: string, head: string) {
             data: {
               title: 'Add mul', body: '', html_url: 'https://github.com/acme/api/pull/7', user: { login: 'author' }, draft: false, state: 'open',
               head: { sha: head, ref: 'pr7' }, base: { sha: base, ref: 'main', repo: { full_name: 'acme/api' } },
-              additions: 1, deletions: 0, changed_files: 1, labels: [], requested_reviewers: [{ login: 'me' }],
+              ...size, changed_files: 1, labels: [], requested_reviewers: [{ login: 'me' }],
             },
           }),
-          listFiles: async () => ({ data: [{ filename: 'app.js', status: 'modified', additions: 1, deletions: 0, patch: '@@ -1 +1,2 @@\n export const add = (a, b) => a + b;\n+export const mul = (a, b) => a * b;' }] }),
+          listFiles: async () => ({ data: [{ filename: 'app.js', status: 'modified', additions: 1, deletions: 0, patch: '@@ -1 +1,2 @@\n export const add = (a, b) => a + b;\n+export const mul = (a, b) => a * b;' }, ...extraFiles] }),
+          listReviewComments: async () => ({ data: [] }),
           list: async () => ({ data: [pr(7, 'Add mul', daysAgo(0)), pr(8, 'Add div', daysAgo(2.5)), pr(9, 'Add pow', daysAgo(90.5)), pr(10, 'Other', daysAgo(1.5))] }),
         },
+        issues: { listComments: async () => ({ data: [{ user: { login: 'author' }, body: 'Guarded the division.', created_at: daysAgo(0) }] }) },
       },
     },
   } as unknown as GitHub;
@@ -102,7 +114,7 @@ const review = (over: Record<string, unknown> = {}) => ({
 
 describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses POSIX paths in the stand-in remotes' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'prr-reviews-'));
-  const { remote, docsRemote, base, head } = makeRemotes(root);
+  const { remote, docsRemote, base, head, fixed, grown } = makeRemotes(root);
   // A fresh database for each test; the repo copies are shared.
   const dbs: Db[] = [];
   const fresh = (name: string) => {
@@ -237,12 +249,97 @@ describe('choosing the reviews', { skip: process.platform === 'win32' && 'uses P
     assert.ok(db.events(j.id).some((e) => e.level === 'warn' && /project context couldn't be refreshed/.test(e.message)));
   });
 
+  // PR 11 was reviewed at `head` with one major finding; the author then pushed a fix.
+  const followUp = (db: Db, number: number, newHead: string) => {
+    const first = db.insertJob({
+      repo: 'acme/api', pr_number: number, pr_title: 'Add mul', pr_url: 'u', author: 'author', head_sha: head, base_sha: base, since_sha: null,
+      reviews: 'code,security,consistency', mode: 'publish', source: 'manual', dry_run: 1, state: 'queued', additions: 1, deletions: 0, changed_files: 1,
+    });
+    db.setState(first.id, 'done', { review_state: 'DRY_RUN', spec_status: 'aligned' });
+    const earlier = db.insertFinding({
+      job_id: first.id, pass: 'main', model: 'codex', model_id: 'm', category: 'bug', severity: 'major', original_severity: 'major', confidence: 'high',
+      file: 'app.js', line: 2, title: 'Dividing by zero', evidence: 'export const mul = (a, b) => a * b;', problem: 'Nothing handles b = 0.', suggestion: 'Return null for 0.',
+      verification: 'confirmed', verified_by: 'codex', verify_reason: null, status: 'inline', drop_reason: null, comment_id: null, outcome: null,
+    });
+    const next = db.insertJob({
+      repo: 'acme/api', pr_number: number, pr_title: 'Add mul', pr_url: 'u', author: 'author', head_sha: newHead, base_sha: base, since_sha: head,
+      reviews: 'code,security,consistency', mode: 'publish', source: 'manual', dry_run: 1, state: 'queued', additions: 1, deletions: 0, changed_files: 1,
+    });
+    return { earlier, next };
+  };
+
+  it('checks the fixes in one run after a small follow-up commit', async () => {
+    const { db, cfg } = fresh('fixcheck');
+    const { earlier, next } = followUp(db, 11, fixed);
+    const { router, runs } = fakeRouter({
+      fixcheck: {
+        summary: 'The division is guarded now.',
+        verdicts: [{ id: earlier.id, status: 'resolved', reason: 'Division by zero returns null now.' }, { id: 999, status: 'resolved', reason: 'Not ours.' }],
+        findings: [
+          { category: 'design', severity: 'minor', confidence: 'high', file: 'app.js', line: 3, title: 'Name', evidence: 'export const safeDiv = (a, b) => (b === 0 ? null : a / b);', problem: 'p', suggestion: 's' },
+        ],
+        review_confidence: { level: 'high', reason: 'Read the fix.' },
+      },
+    });
+    await new ReviewPipeline(fakeGitHub(base, fixed), cfg, db, router, cache).run(next, new AbortController().signal);
+
+    assert.deepEqual(runs.map((r) => r.purpose), ['fixcheck'], 'one run instead of three reviews');
+    const prompt = runs[0].prompt;
+    assert.match(prompt, /This is a follow-up review/);
+    assert.match(prompt, /### Finding id \d+\nmajor · bug · app\.js:2\nTitle: Dividing by zero/);
+    assert.match(prompt, /safeDiv/, 'the new commit is in the diff');
+    assert.doesNotMatch(prompt, /^\+export const mul/m, 'the already-reviewed commit is not');
+    assert.match(prompt, /@author \(.+\): Guarded the division\./, 'with what was said on the PR since');
+
+    const done = db.job(next.id)!;
+    assert.equal(done.state, 'done');
+    assert.equal(done.since_sha, head);
+    assert.equal(db.findings(next.id).length, 0, 'minor problems wait for a full review');
+    assert.equal(db.all<{ resolved_by_job: number }>('SELECT resolved_by_job FROM findings WHERE id = ?', earlier.id)[0].resolved_by_job, next.id);
+    assert.equal(done.confidence, 'high', 'a fix check is not "reviews switched off"');
+    assert.equal(done.spec_status, 'aligned', 'the last review\'s verdict on the issue stands');
+    assert.match(done.review_body ?? '', /^\*\*Looks good\.\*\* The finding from my last review is fixed\.\n\nThe division is guarded now\.\n\n\*\*Fixed\*\*\n\n- Dividing by zero \(`app\.js`\): Division by zero returns null now\./);
+    assert.match(done.review_body ?? '', /<sub>Follow-up check of `[0-9a-f]{7}`: the changes since `[0-9a-f]{7}`<\/sub>$/);
+  });
+
+  it('reviews the whole PR again when the new commits are big', async () => {
+    const { db, cfg } = fresh('bigfollowup');
+    const { next } = followUp(db, 12, grown);
+    const { router, runs } = fakeRouter({ main: review(), security: review(), consistency: review({ related_prs: [] }) });
+    await new ReviewPipeline(fakeGitHub(base, grown, { additions: 451, deletions: 0 }, [{ filename: 'big.js', status: 'added', additions: 450, deletions: 0 }]), cfg, db, router, cache).run(next, new AbortController().signal);
+    assert.deepEqual(runs.map((r) => r.purpose).sort(), ['consistency', 'main', 'security']);
+    assert.doesNotMatch(runs[0].prompt, /This is a follow-up review/);
+    assert.equal(db.job(next.id)!.since_sha, null);
+    assert.ok(db.events(next.id).some((e) => e.message === 'Reviewing the whole PR again: the new commits change 450 lines'));
+  });
+
+  it('runs every review on the new commits when the repo says so', async () => {
+    const { db, cfg } = fresh('fullfollowup');
+    setRepo(cfg, 'acme/api', { followUp: 'full' });
+    const { next } = followUp(db, 11, fixed);
+    const { router, runs } = fakeRouter({ main: review(), security: review(), consistency: review({ related_prs: [] }) });
+    await new ReviewPipeline(fakeGitHub(base, fixed), cfg, db, router, cache).run(next, new AbortController().signal);
+    assert.deepEqual(runs.map((r) => r.purpose).sort(), ['consistency', 'main', 'security']);
+    assert.match(runs[0].prompt, /This is a follow-up review/);
+  });
+
   it('treats a job from before the choice existed as code and security', async () => {
     const { db, cfg } = fresh('three');
     const { router, runs } = fakeRouter({ main: review(), security: review() });
     const j = db.updateJob(job(db, 'x').id, { reviews: null });
     await new ReviewPipeline(fakeGitHub(base, head), cfg, db, router, cache).run(j, new AbortController().signal);
     assert.deepEqual(runs.map((r) => r.purpose).sort(), ['main', 'security']);
+  });
+});
+
+describe('when a follow-up reviews the whole PR again', () => {
+  it('after a rebase, a big change, or a change to most of a PR', () => {
+    const pr = { additions: 900, deletions: 100 };
+    assert.equal(fullReviewReason({ incremental: true, changedLines: 120 }, pr, 'abcdef0123'), null);
+    assert.equal(fullReviewReason({ incremental: false, changedLines: 0 }, pr, 'abcdef0123'), 'the branch was rebased or force-pushed since abcdef0');
+    assert.equal(fullReviewReason({ incremental: true, changedLines: 401 }, pr, 'abcdef0123'), 'the new commits change 401 lines');
+    assert.equal(fullReviewReason({ incremental: true, changedLines: 150 }, { additions: 200, deletions: 50 }, 'x'), 'the new commits change more than half of the PR');
+    assert.equal(fullReviewReason({ incremental: true, changedLines: 60 }, { additions: 70, deletions: 0 }, 'x'), null, 'a small PR stays a fix check');
   });
 });
 

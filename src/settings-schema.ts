@@ -57,6 +57,11 @@ export const RepoSchema = z.object({
       minConfidence: z.enum(['high', 'medium']).default('high'),
     })
     .prefault({}),
+  // What a review after new commits does. "fixes": one run that checks whether the earlier
+  // findings are fixed and looks for serious problems in the new commits only. A big
+  // change or a rebase gets a full review of the whole PR instead. "full": the chosen
+  // reviews all run on the new commits.
+  followUp: z.enum(['fixes', 'full']).default('fixes'),
   // Merge the PR for you once you've approved its latest commit, nobody else asked for
   // changes, and GitHub says it can be merged (required checks passed, branch rules met,
   // no conflicts). Never during a dry run.

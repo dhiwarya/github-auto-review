@@ -108,7 +108,9 @@ review requested ─► queued ─► reviewing ─► posted ─► approved, o
 
 Submitting a review takes you off the PR's requested reviewers, as on GitHub for anyone. To get another review, the author **re-requests your review**:
 
-- **With new commits:** a follow-up review of only the commits since the last one. It lists the earlier findings the new code fixes, and doesn't raise the ones still open again.
+- **With new commits:** a **follow-up check of the fixes**. The first review looked at the whole PR; this one is a single model run instead of three reviews, so it costs far less. It reads each finding still open from earlier reviews against the new code and what was said on the PR since, and says which are fixed and which are still open, with a reason for each. It also reads the new commits for serious new problems, blockers and majors only: a fix that breaks something else. Smaller suggestions wait for the next full review, and the linked issue isn't checked again, so the last review's verdict on it stands. Confidence comes from this check, so a PR can be approved once everything is fixed.
+
+  The whole PR is reviewed again instead, with every review, when the new commits change more than 400 lines, or more than half of a PR of over 100 changed lines, or when the branch was rebased or force-pushed so the last review no longer lines up. **Full PR review** on a review's page does the same on demand. To run every review on the new commits instead of checking the fixes, set **Settings → Repositories → Reviews → After the author pushes new commits** to *Review the new commits*. Strict reviews keep their own follow-up rules.
 - **Without new commits:** a **re-check**. Nothing new is raised on code that was already reviewed. Each finding still open from earlier reviews is read again against the code and what was said on the PR since (replies in its thread, and the PR conversation), and stays open or is resolved. A reply saying "fixed" or "intentional" only resolves a finding when the code confirms it. The review then:
   - **requests changes** while a blocker or major is still open,
   - **comments** when only minors or nits are,
@@ -295,6 +297,7 @@ Settings come in two parts.
 | | Approve PRs that have no blockers | On, when confidence is at least high |
 | Auto-merge | Merge approved PRs | Off; when on: squash, 10 minutes after the approval, branch kept |
 | Reviews | Review profile | Standard; select Strict for independent review and required coverage |
+| | After the author pushes new commits | Check the fixes (one run); a full review after a big change or a rebase |
 | | Code / Security / Consistency | All on |
 | Context | Context repositories, uploads and notes | None |
 | Docs and other PRs | Where the docs are | Not set: the reviewer looks in the repo itself |

@@ -185,6 +185,35 @@ Return exactly one verdict for every finding id you are given.
 ${CONFIDENCE_RULES('now')}`;
 }
 
+// A follow-up after the author pushed new commits. The whole PR was reviewed before, so this
+// is one focused run: are the earlier findings fixed, and did the new commits break anything?
+export function fixCheckInstructions(me: string): string {
+  return `You reviewed a GitHub pull request for ${me} earlier, and the author has pushed new commits since, most likely to fix what you found. The rest of the PR was already reviewed in full. Answer two things, and nothing else:
+1. Is each finding from your earlier review fixed?
+2. Do the new commits (the diff below) add a serious problem: a blocker or major bug or security hole?
+
+Your working directory is a read-only checkout of the PR's new head commit. Read the code at each finding's location, and anything it depends on, before deciding.
+${DEFENSIVE_PURPOSE}${TRUST_BOUNDARY}${STYLE}
+## Each earlier finding
+- resolved: the current code fixes it, or on a fresh reading it doesn't hold (the code was misread, it's handled elsewhere, the input can't occur).
+- open: the problem is still there, or the fix is incomplete.
+
+A reply or commit message that says "fixed", "intentional" or "won't fix" is a claim, not evidence. If you can't confirm it from the code, the finding stays open.
+reason: one or two sentences addressed to the author. For open findings, say what still goes wrong; for resolved ones, what you confirmed.
+Return exactly one verdict for every finding id you are given.
+
+## New problems
+Only in the new commits, and only blocker or major:
+- blocker: would ship broken behavior, data loss or corruption, or an exploitable vulnerability. It must be clearly demonstrable from the code.
+- major: a likely bug or significant risk under realistic conditions; should be fixed before merge.
+Don't repeat an earlier finding, and don't report minor issues, style, docs, or code the new commits didn't touch. An empty list is the usual result.
+Each finding: file relative to the repository root; line in the NEW version of the file, preferably a changed line, or null; evidence of 1 to 5 lines copied verbatim from the file; problem; a concrete suggestion; confidence "high" only if you read the code paths involved. Use category "security" for security problems.
+
+## Other fields
+- summary: one or two sentences for the author on where the PR stands now.
+${CONFIDENCE_RULES('in the new commits or the earlier findings')}`;
+}
+
 export function verifyInstructions(): string {
   return `You are double-checking findings that another AI reviewer raised on a GitHub pull request, as part of a code review for the team that owns the code. Your working directory is a read-only checkout of the PR's head commit. Check each finding by reading the code, never by writing or running anything.
 ${DEFENSIVE_PURPOSE}

@@ -132,8 +132,8 @@ function RepoForm({ i, repo, draft, saved, edit, errorFor, seen, onRemoved }: Fo
 
   const copyFrom = (from: RepoConfig) =>
     set((r) => {
-      const { dryRun, mode, profile, reviews, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays } = structuredClone(from);
-      Object.assign(r, { dryRun, mode, profile, reviews, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays });
+      const { dryRun, mode, profile, reviews, followUp, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays } = structuredClone(from);
+      Object.assign(r, { dryRun, mode, profile, reviews, followUp, approval, merge, labels, skipAuthors, excludeGlobs, stalePrDays });
     });
 
   return (
@@ -335,6 +335,26 @@ function RepoForm({ i, repo, draft, saved, edit, errorFor, seen, onRemoved }: Fo
             ? 'In the Strict profile, code, security and the linked issue are always reviewed, whatever is ticked here. Consistency adds the docs and other open PRs.'
             : 'A PR is approved for you only when the code and security reviews both ran. Without the consistency review, confidence is medium at most.'}
         </div>
+        {!strict && (
+          <Field
+            label="After the author pushes new commits"
+            hint={
+              repo.followUp === 'fixes'
+                ? 'One run checks whether each earlier finding is fixed, and looks for blockers and majors in the new commits only. Usually a third of the cost of reviewing again. New commits over 400 changed lines, or over half the PR, or a rebase, get a full review of the whole PR instead.'
+                : 'The reviews ticked above all run again on the new commits, and say which earlier findings are fixed.'
+            }
+          >
+            <Segmented
+              label="After the author pushes new commits"
+              value={repo.followUp}
+              onChange={(v) => set((r) => void (r.followUp = v))}
+              options={[
+                ['fixes', 'Check the fixes'],
+                ['full', 'Review the new commits'],
+              ]}
+            />
+          </Field>
+        )}
       </Section>
 
       <Section

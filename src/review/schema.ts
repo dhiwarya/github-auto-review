@@ -121,6 +121,20 @@ export const recheckSchema = {
   },
 };
 
+// A follow-up after new commits: a verdict for each earlier finding, plus serious problems
+// the new commits add.
+export const fixCheckSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'verdicts', 'findings', 'review_confidence'],
+  properties: {
+    summary: str,
+    verdicts: recheckSchema.properties.verdicts,
+    findings: { type: 'array', items: findingJson },
+    review_confidence: reviewSchema.properties.review_confidence,
+  },
+};
+
 // Runtime checks of what actually came back.
 
 const severity = z.enum(['blocker', 'major', 'minor', 'nit']);
@@ -223,3 +237,11 @@ export const RecheckOut = z.object({
   review_confidence: ReviewOut.shape.review_confidence,
 });
 export type RecheckOut = z.infer<typeof RecheckOut>;
+
+export const FixCheckOut = z.object({
+  summary: z.string(),
+  verdicts: RecheckOut.shape.verdicts,
+  findings: z.array(FindingOut),
+  review_confidence: ReviewOut.shape.review_confidence,
+});
+export type FixCheckOut = z.infer<typeof FixCheckOut>;

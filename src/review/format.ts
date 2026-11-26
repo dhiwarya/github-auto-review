@@ -257,10 +257,81 @@ export function recheckBody(r: RecheckInput, d: Decision): string {
   return out.join('\n');
 }
 
+export interface FixCheckInput {
+  headSha: string;
+  sinceSha: string; // the commit the last review was of
+  jobId: number;
+  summary: string;
+  findings: Finding[]; // new problems in the new commits (posted ones)
+  open: { finding: Finding; reason: string }[]; // from earlier reviews, still open
+  resolved: { finding: Finding; reason: string }[]; // from earlier reviews, fixed now
+  excluded: string[];
+}
+
+// A follow-up after the author pushed new commits: which earlier findings are fixed, which
+// are still open, and anything serious the new commits add.
+export function fixCheckBody(r: FixCheckInput, d: Decision): string {
+  const fresh = r.findings.filter((f) => f.status !== 'dropped');
+  const stillOpen = r.open.map((o) => o.finding);
+  const all = [...stillOpen, ...fresh];
+  // Open findings are listed below, so the reasons don't repeat them.
+  const why = d.approve ? { reasons: [] } : authorReasons(d.notes, { findings: all, questions: [], doubts: [] });
+  const lead = all.some(serious)
+    ? '**Needs changes.**'
+    : d.approve && d.mode === 'publish'
+      ? '**Approved.**'
+      : why.reasons.length
+        ? "**Looks good, but I'm not approving yet.**"
+        : '**Looks good.**';
+
+  const total = r.open.length + r.resolved.length;
+  const n = r.open.length;
+  const fixes = !total
+    ? 'Nothing from my last review was open.'
+    : !n
+      ? total === 1 ? 'The finding from my last review is fixed.' : `All ${total} findings from my last review are fixed.`
+      : r.resolved.length
+        ? `${r.resolved.length} of ${total} findings from my last review ${r.resolved.length === 1 ? 'is' : 'are'} fixed; ${n} ${n === 1 ? 'is' : 'are'} still open: ${countsLine(stillOpen)}.`
+        : total === 1 ? `The finding from my last review is still open: ${countsLine(stillOpen)}.` : `All ${total} findings from my last review are still open: ${countsLine(stillOpen)}.`;
+  const inline = fresh.some((f) => f.status === 'inline' && f.line !== null);
+  const added = fresh.length ? ` The new commits add ${countsLine(fresh)}.${inline ? ' Details are in the comments on the code.' : ''}` : '';
+  const out = [`${lead} ${fixes}${added}`, ''];
+  if (r.summary.trim()) out.push(r.summary.trim(), '');
+
+  if (n) {
+    out.push('**Still open**', '');
+    for (const { finding: f, reason } of r.open) {
+      out.push(`- ${label(f)} ${oneLine(f.title)}${where(f)}`);
+      if (reason.trim()) out.push(`  ${sentence(reason)}`);
+    }
+    out.push('');
+  }
+  const general = fresh.filter((f) => f.status === 'summary' || (f.status === 'inline' && f.line === null));
+  if (general.length) {
+    out.push('**New in these commits**', '');
+    for (const f of general) {
+      out.push(`- ${label(f)} ${oneLine(f.title)}${where(f)}`);
+      out.push(`  ${[sentence(f.problem), sentence(f.suggestion)].filter(Boolean).join(' ')}`);
+      out.push(`  ${findingMarker(f.id)}`);
+    }
+    out.push('');
+  }
+  if (r.resolved.length) {
+    out.push('**Fixed**', '', ...r.resolved.map(({ finding: f, reason }) => `- ${oneLine(f.title)}${where(f, false)}${reason.trim() ? `: ${sentence(reason)}` : ''}`), '');
+  }
+  if (why.reasons.length) out.push(...notApproving(why.reasons, []));
+
+  out.push(...footer(`<!-- ai-review sha=${r.headSha} job=${r.jobId} -->`, [
+    `Follow-up check of \`${r.headSha.slice(0, 7)}\`: the changes since \`${r.sinceSha.slice(0, 7)}\``,
+    r.excluded.length ? `Skipped ${plural(r.excluded.length, 'generated or lock file')}` : '',
+  ]));
+  return out.join('\n');
+}
+
 // Everything the comment is built from, kept with the job so it can be written again
 // with the decision made right before posting.
-export type ReviewParts = ({ kind: 'review' } & SummaryInput) | ({ kind: 'recheck' } & RecheckInput);
+export type ReviewParts = ({ kind: 'review' } & SummaryInput) | ({ kind: 'recheck' } & RecheckInput) | ({ kind: 'fixcheck' } & FixCheckInput);
 
 export function renderReview(parts: ReviewParts, d: Decision): string {
-  return parts.kind === 'recheck' ? recheckBody(parts, d) : summaryBody(parts, d);
+  return parts.kind === 'recheck' ? recheckBody(parts, d) : parts.kind === 'fixcheck' ? fixCheckBody(parts, d) : summaryBody(parts, d);
 }

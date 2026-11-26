@@ -65,9 +65,6 @@ function issuesSection(issues: LinkedIssue[]): string {
 // The re-check's prompt: the findings still open, each with the replies in its thread,
 // and the PR conversation since the last review. Comments the app wrote are left out.
 export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrComment[], issues: LinkedIssue[]): string {
-  const said = discussion.filter((c) => !isOwnComment(c.body));
-  const quote = (cs: PrComment[]) => clip(cs.map((c) => `@${c.author} (${c.createdAt}): ${clip(c.body, 2000)}`).join('\n\n'), 8000);
-
   const parts: string[] = [];
   parts.push(`# Pull request ${pr.repo}#${pr.number}`);
   parts.push(
@@ -76,6 +73,15 @@ export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrCom
   parts.push(fence('pr-title-and-description', `Title: ${pr.title}\n\n${clip(pr.body || '(no description)', 8000)}`));
   parts.push(issuesSection(issues));
 
+  parts.push(openFindingsSection(findings, discussion));
+  return parts.join('\n\n');
+}
+
+// The findings still open, each with the replies in its thread, and the PR conversation
+// since the last review. Comments the app wrote are left out.
+export function openFindingsSection(findings: Finding[], discussion: PrComment[]): string {
+  const said = discussion.filter((c) => !isOwnComment(c.body));
+  const quote = (cs: PrComment[]) => clip(cs.map((c) => `@${c.author} (${c.createdAt}): ${clip(c.body, 2000)}`).join('\n\n'), 8000);
   const list = findings.map((f) => {
     const replies = f.comment_id ? said.filter((c) => c.inReplyTo === f.comment_id) : [];
     return [
@@ -88,11 +94,11 @@ export function recheckPrompt(pr: PrInfo, findings: Finding[], discussion: PrCom
       replies.length ? fence('replies-in-this-finding-thread', quote(replies)) : 'No replies in its thread.',
     ].join('\n');
   });
-  parts.push(`## Findings still open (${findings.length})\n\n${list.join('\n\n')}`);
-
   const conversation = said.filter((c) => c.inReplyTo === null);
-  parts.push(conversation.length ? fence('pr-conversation since the last review', quote(conversation)) : 'No PR conversation since the last review.');
-  return parts.join('\n\n');
+  return [
+    findings.length ? `## Findings still open (${findings.length})\n\n${list.join('\n\n')}` : '## Findings still open\n\nNone: nothing from earlier reviews is open.',
+    conversation.length ? fence('pr-conversation since the last review', quote(conversation)) : 'No PR conversation since the last review.',
+  ].join('\n\n');
 }
 
 export async function buildContext(

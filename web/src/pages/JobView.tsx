@@ -280,7 +280,7 @@ export function JobView({ id }: { id: number }) {
               job.since_sha && (
                 <>
                   {' '}
-                  (follow-up since <code>{shortSha(job.since_sha)}</code>)
+                  ({detail.runs.some((r) => r.purpose === 'fixcheck') ? 'checking the fixes' : 'follow-up'} since <code>{shortSha(job.since_sha)}</code>)
                 </>
               )
             )}

@@ -5,7 +5,8 @@ export type ReviewMode = 'draft' | 'publish';
 // The kinds of review a job can run. Each is its own model run ("main" is the code review).
 export type ReviewType = 'code' | 'security' | 'consistency';
 export const REVIEW_TYPES: ReviewType[] = ['code', 'security', 'consistency'];
-export type Pass = 'main' | 'security' | 'consistency' | 'adversarial';
+// fixcheck: a follow-up after new commits that checks the earlier findings were fixed.
+export type Pass = 'main' | 'security' | 'consistency' | 'adversarial' | 'fixcheck';
 export const PASS_OF: Record<ReviewType, Pass> = { code: 'main', security: 'security', consistency: 'consistency' };
 
 // Which reviews a job runs. Jobs from before the choice existed ran code and security.
